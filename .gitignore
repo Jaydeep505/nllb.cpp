@@ -1,0 +1,23 @@
+# environments
+.venv/
+__pycache__/
+*.pyc
+
+# model weights + converted GGUF — regenerate with tools/convert_nllb_to_gguf.py
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# golden files — regenerate with tools/dump_reference.py
+ref/
+*.npz
+*.npy
+
+# build
+build/
+*.o
+*.a
+*.dylib
+
+.DS_Store
