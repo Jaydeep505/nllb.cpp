@@ -11,6 +11,7 @@ models/
 
 # golden files — regenerate with tools/dump_reference.py
 ref/
+ref-*/
 *.npz
 *.npy
 
@@ -21,3 +22,4 @@ build/
 *.dylib
 
 .DS_Store
+*.tar.gz

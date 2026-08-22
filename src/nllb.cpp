@@ -81,12 +81,30 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
     if (!kv_f32(g, "nllb.embedding_scale", hp.embd_scale)) {
         hp.embd_scale = std::sqrt((float) hp.d_model);
     }
-    {
-        const int64_t id = gguf_find_key(g, "tokenizer.ggml.padding_token_id");
-        if (id >= 0) hp.pad_id = (int32_t) gguf_get_val_u32(g, id);
+    kv_u32(g, "tokenizer.ggml.padding_token_id", hp.pad_id);
+    kv_u32(g, "tokenizer.ggml.bos_token_id",     hp.bos_id);
+    kv_u32(g, "tokenizer.ggml.eos_token_id",     hp.eos_id);
+    // NLLB's decoder_start_token_id is eos, not bos. Read it if the converter
+    // wrote it; fall back to eos rather than to the more obvious-looking bos.
+    hp.dec_start_id = hp.eos_id;
+    kv_u32(g, "nllb.decoder_start_token_id", hp.dec_start_id);
+
+    // Decoder metadata is absent in --encoder-only files; that is not an error.
+    model.has_decoder = kv_u32(g, "nllb.decoder.block_count", hp.n_dec_layer);
+    if (model.has_decoder) {
+        bool dok = true;
+        dok &= kv_u32(g, "nllb.decoder.attention.head_count", hp.n_dec_head);
+        dok &= kv_u32(g, "nllb.decoder.feed_forward_length",  hp.n_dec_ff);
+        if (!dok) { err = "decoder.block_count present but decoder.* incomplete";
+                    return false; }
     }
+
     if (hp.d_model % hp.n_head != 0) {
         err = "d_model not divisible by n_head";
+        return false;
+    }
+    if (model.has_decoder && hp.n_dec_head > 0 && hp.d_model % hp.n_dec_head != 0) {
+        err = "d_model not divisible by decoder n_head";
         return false;
     }
 
@@ -116,6 +134,48 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         l.w_down = need(ctx_data, p + "ffn_down.weight", err);
         l.b_down = need(ctx_data, p + "ffn_down.bias",   err);
     }
+    if (model.has_decoder) {
+        model.dec_out_norm_w = need(ctx_data, "dec.output_norm.weight", err);
+        model.dec_out_norm_b = need(ctx_data, "dec.output_norm.bias",   err);
+        // Tied lm_head is the NLLB default, so a missing output.weight is
+        // expected rather than a failure.
+        model.output_w = ggml_get_tensor(ctx_data, "output.weight");
+
+        model.dec.resize(hp.n_dec_layer);
+        for (int i = 0; i < hp.n_dec_layer; ++i) {
+            const std::string p = "dec.blk." + std::to_string(i) + ".";
+            nllb_dec_layer & l = model.dec[i];
+            l.attn_norm_w = need(ctx_data, p + "attn_norm.weight", err);
+            l.attn_norm_b = need(ctx_data, p + "attn_norm.bias",   err);
+            l.wq = need(ctx_data, p + "attn_q.weight",   err);
+            l.bq = need(ctx_data, p + "attn_q.bias",     err);
+            l.wk = need(ctx_data, p + "attn_k.weight",   err);
+            l.bk = need(ctx_data, p + "attn_k.bias",     err);
+            l.wv = need(ctx_data, p + "attn_v.weight",   err);
+            l.bv = need(ctx_data, p + "attn_v.bias",     err);
+            l.wo = need(ctx_data, p + "attn_out.weight", err);
+            l.bo = need(ctx_data, p + "attn_out.bias",   err);
+
+            l.cross_norm_w = need(ctx_data, p + "cross_attn_norm.weight", err);
+            l.cross_norm_b = need(ctx_data, p + "cross_attn_norm.bias",   err);
+            l.cwq = need(ctx_data, p + "cross_attn_q.weight",   err);
+            l.cbq = need(ctx_data, p + "cross_attn_q.bias",     err);
+            l.cwk = need(ctx_data, p + "cross_attn_k.weight",   err);
+            l.cbk = need(ctx_data, p + "cross_attn_k.bias",     err);
+            l.cwv = need(ctx_data, p + "cross_attn_v.weight",   err);
+            l.cbv = need(ctx_data, p + "cross_attn_v.bias",     err);
+            l.cwo = need(ctx_data, p + "cross_attn_out.weight", err);
+            l.cbo = need(ctx_data, p + "cross_attn_out.bias",   err);
+
+            l.ffn_norm_w = need(ctx_data, p + "ffn_norm.weight", err);
+            l.ffn_norm_b = need(ctx_data, p + "ffn_norm.bias",   err);
+            l.w_up   = need(ctx_data, p + "ffn_up.weight",   err);
+            l.b_up   = need(ctx_data, p + "ffn_up.bias",     err);
+            l.w_down = need(ctx_data, p + "ffn_down.weight", err);
+            l.b_down = need(ctx_data, p + "ffn_down.bias",   err);
+        }
+    }
+
     if (!err.empty()) return false;
 
     // The position table must cover n_ctx + pos_offset rows, because token j
@@ -265,6 +325,233 @@ bool nllb_encode(const nllb_model & model,
         out.hidden_states.resize(hs.size());
         for (size_t i = 0; i < hs.size(); ++i) {
             out.hidden_states[i].resize((size_t) T * D);
+            std::memcpy(out.hidden_states[i].data(), hs[i]->data,
+                        out.hidden_states[i].size() * sizeof(float));
+        }
+    }
+
+    ggml_free(ctx);
+    return true;
+}
+
+// --------------------------------------------------------------------------
+// decoder graph
+//
+// Teacher-forced: the whole target sequence in one pass, causally masked, no
+// KV cache. Cross-attention K and V are computed once per block from the
+// frozen encoder output - they do not depend on the decoder step, which is
+// exactly why they are the first thing worth caching once this is green.
+// --------------------------------------------------------------------------
+
+bool nllb_decode(const nllb_model & model,
+                 const nllb_encode_result & enc,
+                 const std::vector<int32_t> & dec_ids,
+                 const std::vector<int32_t> & src_ids,
+                 int n_threads,
+                 bool want_hidden_states,
+                 bool want_logits,
+                 nllb_decode_result & out,
+                 std::string & err) {
+    const nllb_hparams & hp = model.hp;
+    const int Td = (int) dec_ids.size();
+    const int Ts = enc.n_tokens;
+    const int D  = hp.d_model;
+    const int H  = hp.n_dec_head;
+    const int HD = hp.dec_head_dim();
+    const int L  = hp.n_dec_layer;
+
+    if (!model.has_decoder)          { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
+    if (Td <= 0)                     { err = "empty decoder input";  return false; }
+    if (Ts <= 0)                     { err = "empty encoder output"; return false; }
+    if (enc.d_model != D)            { err = "encoder output d_model mismatch"; return false; }
+    if ((int) enc.output.size() != Ts * D) { err = "encoder output size mismatch"; return false; }
+    if (Td > hp.n_ctx && hp.n_ctx > 0)     { err = "target sequence too long"; return false; }
+
+    // Cross-attention here is unmasked, exactly as the encoder's self-attention
+    // is. That is correct for a single unpadded source and wrong for a padded
+    // batch, so refuse the padded case loudly instead of returning plausible
+    // numbers. Lifting this means a mask tensor into ggml_soft_max_ext on the
+    // cross-attention logits, and goldens that actually exercise padding.
+    for (int32_t id : src_ids) {
+        if (id == hp.pad_id) {
+            err = "padded source sequences are not supported yet "
+                  "(cross-attention is unmasked); see nllb_decode";
+            return false;
+        }
+    }
+
+    size_t per_layer = (size_t) 48 * Td * D
+                     + (size_t)  8 * Td * Td * H
+                     + (size_t) 12 * Td * Ts * H
+                     + (size_t)  8 * Ts * D
+                     + (size_t)  6 * Td * hp.n_dec_ff;
+    size_t mem = ((size_t) L * per_layer + (size_t) 64 * Td * D
+                  + (size_t) 2 * Ts * D) * sizeof(float);
+    if (want_logits) mem += (size_t) 3 * Td * hp.n_vocab * sizeof(float);
+    mem = mem * 2 + 128u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 8192
+        + ggml_graph_overhead();
+
+    ggml_init_params ip = {};
+    ip.mem_size   = mem;
+    ip.mem_buffer = nullptr;
+    ip.no_alloc   = false;
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) { err = "ggml_init failed (decoder)"; return false; }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    ggml_tensor * inp_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Td);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Td);
+    ggml_set_name(inp_ids, "dec_ids");
+    ggml_set_name(inp_pos, "dec_pos");
+    std::memcpy(inp_ids->data, dec_ids.data(), Td * sizeof(int32_t));
+
+    // Same rule as the encoder: cumsum(mask) * mask + pad_id, against a table
+    // built with offset 2. With no KV cache there is no past length to add, so
+    // target token j reads row j + 2 - but keep the general form, because the
+    // incremental path only differs by starting the running count at n_past.
+    {
+        int32_t * p = (int32_t *) inp_pos->data;
+        int32_t run = 0;
+        for (int j = 0; j < Td; ++j) {
+            const bool is_pad = (dec_ids[j] == hp.pad_id);
+            if (!is_pad) ++run;
+            p[j] = is_pad ? hp.pad_id : run + hp.pad_id;
+        }
+    }
+
+    // Encoder output as a graph input: ne = [D, Ts], matching the row-major
+    // [Ts, D] buffer nllb_encode returns.
+    ggml_tensor * enc_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, Ts);
+    ggml_set_name(enc_t, "enc_out");
+    std::memcpy(enc_t->data, enc.output.data(), (size_t) Ts * D * sizeof(float));
+
+    ggml_tensor * cur = ggml_get_rows(ctx, model.tok_embd, inp_ids);
+    cur = ggml_scale(ctx, cur, hp.embd_scale);
+    cur = ggml_add(ctx, cur, ggml_get_rows(ctx, model.pos_embd, inp_pos));
+
+    std::vector<ggml_tensor *> hs;
+    hs.reserve(L + 1);
+
+    const float attn_scale = 1.0f / std::sqrt((float) HD);
+
+    for (int il = 0; il < L; ++il) {
+        const nllb_dec_layer & l = model.dec[il];
+        hs.push_back(cur);   // HF decoder_hidden_states[il] == input to block il
+
+        // ---- causal self-attention ----
+        ggml_tensor * residual = cur;
+        ggml_tensor * h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.attn_norm_w), l.attn_norm_b);
+
+        ggml_tensor * Q = ggml_add(ctx, ggml_mul_mat(ctx, l.wq, h), l.bq);
+        Q = ggml_scale(ctx, Q, attn_scale);
+        ggml_tensor * K = ggml_add(ctx, ggml_mul_mat(ctx, l.wk, h), l.bk);
+        ggml_tensor * V = ggml_add(ctx, ggml_mul_mat(ctx, l.wv, h), l.bv);
+
+        Q = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, Q, HD, H, Td), 0, 2, 1, 3));  // (HD, Td, H)
+        K = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, K, HD, H, Td), 0, 2, 1, 3));  // (HD, Td, H)
+        V = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, V, HD, H, Td), 1, 2, 0, 3));  // (Td, HD, H)
+
+        ggml_tensor * kq = ggml_mul_mat(ctx, K, Q);                // (Td_k, Td_q, H)
+        // The one structural difference from the encoder. n_past is 0 because
+        // this is the un-cached path; with a KV cache it becomes the number of
+        // already-decoded tokens.
+        kq = ggml_diag_mask_inf(ctx, kq, 0);
+        kq = ggml_soft_max_ext(ctx, kq, nullptr, 1.0f, 0.0f);
+        ggml_tensor * kqv = ggml_mul_mat(ctx, V, kq);              // (HD, Td, H)
+
+        kqv = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));  // (HD, H, Td)
+        cur = ggml_reshape_2d(ctx, kqv, D, Td);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.wo, cur), l.bo);
+        cur = ggml_add(ctx, cur, residual);
+
+        // ---- cross-attention against the frozen encoder output ----
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.cross_norm_w), l.cross_norm_b);
+
+        // Q from the decoder (Td rows), K and V from the encoder (Ts rows).
+        // Mixing these up produces a graph that builds, runs, and is wrong.
+        ggml_tensor * cQ = ggml_add(ctx, ggml_mul_mat(ctx, l.cwq, h), l.cbq);
+        cQ = ggml_scale(ctx, cQ, attn_scale);
+        ggml_tensor * cK = ggml_add(ctx, ggml_mul_mat(ctx, l.cwk, enc_t), l.cbk);
+        ggml_tensor * cV = ggml_add(ctx, ggml_mul_mat(ctx, l.cwv, enc_t), l.cbv);
+
+        cQ = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, cQ, HD, H, Td), 0, 2, 1, 3));  // (HD, Td, H)
+        cK = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, cK, HD, H, Ts), 0, 2, 1, 3));  // (HD, Ts, H)
+        cV = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, cV, HD, H, Ts), 1, 2, 0, 3));  // (Ts, HD, H)
+
+        ggml_tensor * ckq = ggml_mul_mat(ctx, cK, cQ);              // (Ts, Td, H)
+        // No causal mask here: every target position may see the whole source.
+        ckq = ggml_soft_max_ext(ctx, ckq, nullptr, 1.0f, 0.0f);
+        ggml_tensor * ckqv = ggml_mul_mat(ctx, cV, ckq);            // (HD, Td, H)
+
+        ckqv = ggml_cont(ctx, ggml_permute(ctx, ckqv, 0, 2, 1, 3)); // (HD, H, Td)
+        cur = ggml_reshape_2d(ctx, ckqv, D, Td);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.cwo, cur), l.cbo);
+        cur = ggml_add(ctx, cur, residual);
+
+        // ---- feed forward ----
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.ffn_norm_w), l.ffn_norm_b);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_up, h), l.b_up);
+        h = ggml_relu(ctx, h);                                     // NLLB is relu
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_down, h), l.b_down);
+        cur = ggml_add(ctx, h, residual);
+    }
+
+    cur = ggml_norm(ctx, cur, hp.eps);
+    cur = ggml_add(ctx, ggml_mul(ctx, cur, model.dec_out_norm_w), model.dec_out_norm_b);
+    ggml_set_name(cur, "dec_out");
+    hs.push_back(cur);   // HF decoder_hidden_states[n_dec_layer]
+
+    // lm_head, tied to token_embd unless the checkpoint untied it. ne of the
+    // embedding is [D, vocab], so mul_mat against [D, Td] gives [vocab, Td] -
+    // row-major logits[t][v], no transpose anywhere.
+    ggml_tensor * logits = nullptr;
+    if (want_logits) {
+        logits = ggml_mul_mat(ctx, model.lm_head(), cur);
+        ggml_set_name(logits, "logits");
+        ggml_build_forward_expand(gf, logits);
+    }
+
+    ggml_build_forward_expand(gf, cur);
+    if (want_hidden_states) {
+        for (ggml_tensor * t : hs) ggml_build_forward_expand(gf, t);
+    }
+
+    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
+    if (st != GGML_STATUS_SUCCESS) {
+        err = "ggml_graph_compute failed (decoder), status " + std::to_string((int) st);
+        ggml_free(ctx);
+        return false;
+    }
+
+    out.n_tokens = Td;
+    out.d_model  = D;
+    out.n_vocab  = (int32_t) model.lm_head()->ne[1];
+    out.output.resize((size_t) Td * D);
+    std::memcpy(out.output.data(), cur->data, out.output.size() * sizeof(float));
+
+    out.logits.clear();
+    if (want_logits) {
+        out.logits.resize((size_t) Td * out.n_vocab);
+        std::memcpy(out.logits.data(), logits->data, out.logits.size() * sizeof(float));
+    }
+
+    out.hidden_states.clear();
+    if (want_hidden_states) {
+        out.hidden_states.resize(hs.size());
+        for (size_t i = 0; i < hs.size(); ++i) {
+            out.hidden_states[i].resize((size_t) Td * D);
             std::memcpy(out.hidden_states[i].data(), hs[i]->data,
                         out.hidden_states[i].size() * sizeof(float));
         }

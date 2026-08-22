@@ -19,3 +19,7 @@ target_link_libraries(nllb PUBLIC ggml)
 add_executable(nllb-test tests/test_encoder.cpp)
 target_link_libraries(nllb-test PRIVATE nllb)
 set_target_properties(nllb-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(nllb-test-decoder tests/test_decoder.cpp)
+target_link_libraries(nllb-test-decoder PRIVATE nllb)
+set_target_properties(nllb-test-decoder PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

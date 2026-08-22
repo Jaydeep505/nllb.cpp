@@ -425,6 +425,11 @@ def main() -> int:
         w.add_uint32(f"{ARCH}.decoder.block_count",         cfg["decoder_layers"])
         w.add_uint32(f"{ARCH}.decoder.attention.head_count", cfg["decoder_attention_heads"])
         w.add_uint32(f"{ARCH}.decoder.feed_forward_length",  cfg["decoder_ffn_dim"])
+        # NLLB starts the decoder with EOS and then forces the target language
+        # code, so this is 2 and not bos. Write it so the runtime never has to
+        # guess - guessing bos here produces fluent output in the wrong
+        # language, which is the kind of bug that survives a test suite.
+        w.add_decoder_start_token_id(cfg.get("decoder_start_token_id", eos_id))
 
     w.add_layer_norm_eps(1e-5)                       # torch nn.LayerNorm default
     w.add_float32(f"{ARCH}.embedding_scale",
@@ -480,6 +485,22 @@ def main() -> int:
                      "model.encoder.embed_tokens.weight",
                      "model.decoder.embed_tokens.weight",
                      "shared.weight")
+
+    # The GGUF schema has exactly one token_embd.weight, which is only sound
+    # while the encoder and the decoder genuinely share it. NLLB does - HF ties
+    # both to model.shared - but a checkpoint saved with
+    # tie_word_embeddings=False writes all of them out separately, and if they
+    # ever differ we would silently encode with the wrong matrix. Nothing
+    # downstream can detect that: the shapes match and the numbers look
+    # plausible. So check here, where it is still cheap.
+    for other in ("model.encoder.embed_tokens.weight",
+                  "model.decoder.embed_tokens.weight"):
+        if other in ck and not np.array_equal(ck.get(other), embed):
+            sys.exit(f"  ! {other} differs from the shared embedding. The GGUF "
+                     f"schema stores one token_embd.weight for both towers, so "
+                     f"this checkpoint cannot be converted faithfully. "
+                     f"(NLLB ties these; if you hit this on a real model the "
+                     f"schema needs enc/dec embeddings split, not a workaround.)")
     emit("token_embd.weight", embed)
     emit("position_embd.weight",
          resolve_position_table(ck, max_pos, d_model, pad_id))
