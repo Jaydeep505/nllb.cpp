@@ -1,0 +1,127 @@
+# Slow gate: the real facebook/nllb-200-distilled-600M, end to end.
+#
+# Deliberately NOT on every push. It downloads ~2.4 GB, takes tens of minutes,
+# and depends on huggingface.co being up - a gate that goes red for reasons
+# unrelated to your code is a gate you learn to ignore. Weekly, plus on demand.
+#
+# What this buys over running it locally: the runner is x86 without Accelerate
+# or Metal, and regenerates the goldens with torch on a different CPU. If the
+# greedy ids still match exactly here, that is a cross-platform claim, not just
+# a re-run.
+
+name: real-model
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 04:00 UTC. Also keeps the model cache warm: GitHub evicts cache
+    # entries that have not been read in 7 days.
+    - cron: '0 4 * * 1'
+
+env:
+  MODEL_ID: facebook/nllb-200-distilled-600M
+  # PIN THIS to a commit sha from the model repo. On `main`, an upstream
+  # re-upload silently changes your reference and you will spend an evening
+  # bisecting your own code for a change you did not make.
+  MODEL_REV: main
+  TGT_LANG: deu_Latn
+  MAX_NEW: '24'
+
+jobs:
+  real-600m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Free disk space
+        # The runner has ~14 GB. Snapshot 2.4 + GGUF 2.4 + torch ~1 GB (CPU
+        # wheels) leaves little room; these two directories are not used here.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc || true
+          df -h /
+
+      - name: Install python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy safetensors gguf sentencepiece transformers huggingface_hub
+
+      - name: Cache the model snapshot
+        # The snapshot only - NOT the GGUF. Regenerating the GGUF every run is
+        # a feature: it keeps the converter under test.
+        uses: actions/cache@v4
+        with:
+          path: models/nllb-600M
+          key: nllb-600m-${{ env.MODEL_REV }}
+
+      - name: Download the model
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          p = snapshot_download(
+              os.environ["MODEL_ID"],
+              revision=os.environ["MODEL_REV"],
+              local_dir="models/nllb-600M",
+              # tokenizer files are needed: the dumpers still use HF's tokenizer
+              allow_patterns=["*.json", "*.model", "*.safetensors", "*.bin", "*.txt"],
+          )
+          print("snapshot at", p)
+          PY
+          du -sh models/nllb-600M
+
+      - name: Convert to GGUF
+        run: |
+          python tools/convert_nllb_to_gguf.py models/nllb-600M \
+              --outfile models/nllb-600M-f32.gguf --outtype f32
+          ls -la models/nllb-600M-f32.gguf
+
+      - name: Python gates
+        run: |
+          python tests/verify_encoder.py models/nllb-600M models/nllb-600M-f32.gguf
+          python tests/verify_decoder.py models/nllb-600M models/nllb-600M-f32.gguf
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Dump goldens
+        # dump_reference.py MUST run first: the decoder dumper reads
+        # ref/<name>.ids.bin back so the two cannot drift apart.
+        run: |
+          python tools/dump_reference.py models/nllb-600M --out ref/ \
+              --lang eng_Latn --per-layer
+          python tools/dump_decoder_reference.py models/nllb-600M --out ref/ \
+              --tgt-lang "$TGT_LANG" --per-layer --greedy --max-new-tokens "$MAX_NEW"
+
+      - name: Encoder gate
+        run: ./build/bin/nllb-test models/nllb-600M-f32.gguf ref/ -t 4
+
+      - name: Decoder gate
+        run: ./build/bin/nllb-test-decoder models/nllb-600M-f32.gguf ref/ -t 4
+
+      - name: Generate gate
+        # Slowest step by far: no KV cache, so every one of the 24 steps
+        # re-decodes the whole prefix.
+        run: ./build/bin/nllb-test-generate models/nllb-600M-f32.gguf ref/ -t 4 --check-modes
+
+      - name: Upload the German output
+        # ref/*.dec.json carries greedy_text next to the ids, so a green run is
+        # readable as translations rather than as integers.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: greedy-output
+          path: ref/*.dec.json
+          retention-days: 14
