@@ -7,6 +7,9 @@ tests/test_encoder.cpp  golden diff against ref/, with per-layer bisect
 CMakeLists.txt        vendors ggml, builds bin/nllb-test
 ```
 
+Later steps add `bin/nllb-test-decoder` (see `DECODER.md`) and
+`bin/nllb-test-generate` (see `GENERATE.md`) to the same build.
+
 ## Build
 
 ggml is vendored as a git submodule, so the tree stays dependency-free:

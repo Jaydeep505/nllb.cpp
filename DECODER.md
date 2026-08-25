@@ -9,19 +9,49 @@ tests/corrupt_gguf.py            break one tensor on purpose, to test the tests
 src/nllb.{h,cpp}                 nllb_decode + decoder tensor loading
 ```
 
+## Complete on the real 600M
+
+`facebook/nllb-200-distilled-600M`, 9 cases, 0 failed, `argmax=same` on every
+one:
+
+```
+model: d_model=1024 dec_layers=12 dec_heads=16 dec_ffn=4096 vocab=256206
+       eps=1e-05 embd_scale=32 dec_start=2 pad=1 eos=2 lm_head=tied
+tolerances are RELATIVE: states 5.0e-05, logits 1.0e-04
+
+  00_hello_world  Td=6   rel=8.400e-07  logit=1.634e-06  argmax=same  ok
+  01_quick_brown  Td=16  rel=9.216e-07  logit=1.097e-06  argmax=same  ok
+  02_empty        Td=2   rel=5.171e-07  logit=1.045e-06  argmax=same  ok
+  03_single_char  Td=3   rel=4.569e-07  logit=7.782e-07  argmax=same  ok
+  04_long         Td=37  rel=7.430e-07  logit=1.060e-06  argmax=same  ok
+  05_german       Td=21  rel=1.114e-06  logit=6.650e-07  argmax=same  ok
+  06_japanese     Td=13  rel=1.443e-06  logit=8.079e-07  argmax=same  ok
+  07_arabic       Td=19  rel=1.494e-06  logit=9.061e-07  argmax=same  ok
+  08_repeated     Td=10  rel=5.142e-07  logit=9.045e-07  argmax=same  ok
+
+worst rel = 1.494e-06 (07_arabic), worst logit rel = 1.634e-06
+```
+
+That is a factor of 33 inside the state tolerance and 60 inside the logit one.
+Re-running it after step 4 changed `nllb_decode`'s signature (`logits_mode`,
+`pos_mode`) reproduced these digits **exactly**, which is the cheapest possible
+proof that the refactor was numerically a no-op.
+
 Same ladder that made the encoder trustworthy, one rung up:
 
-| comparison | worst max\|d\| |
+| comparison | worst |
 |---|---|
-| HF torch vs numpy-from-GGUF, synthetic 3-layer / 2-dec | 9.5e-07 |
-| HF torch vs ggml C++, synthetic 3-layer / 2-dec | 1.6e-06 |
-| HF torch vs numpy-from-GGUF, synthetic 12-layer / 16-head / untied | 7.6e-06 |
-| **HF torch vs ggml C++, synthetic 12-layer / 16-head / untied** | **2.0e-06** |
+| HF torch vs numpy-from-GGUF, synthetic 3-layer / 2-dec | 9.5e-07 abs |
+| HF torch vs ggml C++, synthetic 3-layer / 2-dec | 1.6e-06 abs |
+| HF torch vs numpy-from-GGUF, synthetic 12-layer / 16-head / untied | 7.6e-06 abs |
+| HF torch vs ggml C++, synthetic 12-layer / 16-head / untied | 2.0e-06 abs |
+| HF torch vs numpy-from-GGUF, **real 600M** | 3.3e-06 rel |
+| **HF torch vs ggml C++, real 600M** | **1.5e-06 rel** |
 
-Not yet run against the real `facebook/nllb-200-distilled-600M` - `huggingface.co`
-is unreachable from the sandbox this was written in. The commands below are the
-ones to run locally, and the numbers to expect are the same order as the
-encoder's 2.4e-06.
+Tolerances are relative here and absolute on the synthetic rows for a reason:
+see the note in `claude/handoff.md` about the pre-layernorm residual stream
+reaching ~4200 by block 4, where one float32 ULP is ~5e-4 and an absolute
+threshold becomes unsatisfiable rather than strict.
 
 ## Teacher forced, no KV cache - on purpose
 
@@ -53,10 +83,10 @@ cmake --build build -j
 ./build/bin/nllb-test-decoder models/nllb-600M-f32.gguf ref/ -t 8
 ```
 
-`--greedy` also writes `ref/<name>.gen.bin`, the ids from
-`generate(num_beams=1)`. Nothing consumes it yet; it is the golden the greedy
-loop will need in step 4, and it costs nothing to dump now while the model is
-already loaded.
+`--greedy` also writes `ref/<name>.gen.bin` (ids from `generate(num_beams=1)`)
+and `ref/manifest_gen.txt`. Both are consumed by `bin/nllb-test-generate` in
+step 4, and `--greedy` is no longer optional if you intend to run that gate.
+Run it here anyway while the model is already loaded - it costs nothing.
 
 Each case runs the *real* pipeline - `nllb_encode` on the source ids, then
 `nllb_decode` against that output - rather than feeding the decoder a golden
@@ -157,19 +187,23 @@ It fired on a synthetic one within minutes of building it, which is the point.
 
 ## Still not proven
 
-- The real 600M. Only synthetic models so far - see the note at the top.
 - **KV cache.** Nothing incremental exists yet.
 - **Padded batches.** Cross-attention is unmasked, exactly as the encoder's
   self-attention is. `nllb_decode` *rejects* source ids containing `pad_id`
   rather than returning plausible numbers; lifting that means a mask tensor
-  into `ggml_soft_max_ext` and goldens that actually exercise padding.
+  into `ggml_soft_max_ext` and goldens that actually exercise padding. Note
+  this is about the *source*: a decoder that emits `pad_id` is handled, via
+  `nllb_pos_mode` - see `GENERATE.md`.
 - **The tokenizer.** Still HF's. The GGUF's embedded vocab remains unread.
 - f16, performance, Metal.
 
 ## Next
 
-1. **Greedy loop**, diffed against `ref/<name>.gen.bin` which is already dumped.
-   Argmax agreement is already gated per-case, so the loop is the only new part.
+1. ~~**Greedy loop**~~ - done, see `GENERATE.md`. One finding from it belongs
+   here: that gate compares token ids exactly, but it is blind to any error
+   that preserves the argmax ordering - a 1.01x scale on `dec.output_norm`
+   fails all 9 cases *here* and none of them there. It does not replace this
+   gate; run both.
 2. **KV cache**, verified against the un-cached path rather than against HF.
 3. **Tokenizer in C++** against the embedded vocab - the last Python dependency
    and the remaining silent-bug reservoir.

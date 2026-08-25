@@ -20,6 +20,13 @@ Per case, raw little-endian:
     ref/<name>.gen.bin            int32[Tg]              with --greedy
     ref/<name>.dec.json           ids, tokens, shapes, checksums
     ref/manifest_dec.txt          "<name> <Td> <d_model> <n_dec_hs> <vocab>"
+    ref/manifest_gen.txt          "<name> <Tg> <forced_bos> <max_new> <dec_start>"
+                                  with --greedy
+
+manifest_gen.txt exists because forced_bos_token_id and max_new_tokens are
+*inputs* to generation, not results of it. Letting the C++ gate read them off
+the golden - taking gen.bin[1] as the forced token, say - would make the test
+pass by construction on exactly the mistake it is there to catch.
 
 Layer indexing is the same trap as the encoder, verified against this exact
 transformers version rather than assumed:
@@ -75,6 +82,11 @@ def main() -> int:
     ap.add_argument("--greedy", action="store_true",
                     help="also dump generate(num_beams=1) ids for the next milestone")
     ap.add_argument("--max-new-tokens", type=int, default=24)
+    ap.add_argument("--forced-bos", type=int, default=None,
+                    help="override forced_bos_token_id. On the real model the "
+                         "target language code is looked up from --tgt-lang; "
+                         "with --random-ids there is no tokenizer, so this is "
+                         "the only way to exercise the forced position at all")
     ap.add_argument("--all-logits", action="store_true",
                     help="dump [Td, vocab] instead of just the last step "
                          "(~1 MB per token on the 600M - off by default)")
@@ -103,6 +115,62 @@ def main() -> int:
         tok = AutoTokenizer.from_pretrained(args.model, tgt_lang=args.tgt_lang)
         tgt_lang_id = tok.convert_tokens_to_ids(args.tgt_lang)
         print(f"tgt_lang={args.tgt_lang} -> id {tgt_lang_id}")
+    if args.forced_bos is not None:
+        tgt_lang_id = args.forced_bos if args.forced_bos >= 0 else None
+        print(f"forced_bos_token_id overridden -> {tgt_lang_id}")
+
+    # The C++ side implements greedy argmax with forced_bos and nothing else.
+    # If this checkpoint's generation config turns on any other logits
+    # processor, the goldens stop being reproducible by that loop - and the
+    # failure would look like a graph bug rather than a missing feature. Say so
+    # here, where the cause is visible.
+    #
+    # The "off" value is spelled out per key rather than tested against a
+    # shared tuple: `1 in (None, 0, 1.0, [])` is True in Python, so a blanket
+    # membership test silently accepts no_repeat_ngram_size=1 and
+    # min_new_tokens=1 - both live processors, and exactly the kind of thing
+    # this check exists to catch.
+    UNSUPPORTED_OFF = {
+        "bad_words_ids":                    (None, []),
+        "no_repeat_ngram_size":             (None, 0),
+        "encoder_no_repeat_ngram_size":     (None, 0),
+        "min_length":                       (None, 0),
+        "min_new_tokens":                   (None, 0),
+        "forced_eos_token_id":              (None,),
+        "suppress_tokens":                  (None, []),
+        "begin_suppress_tokens":            (None, []),
+        "repetition_penalty":               (None, 1.0),
+        "encoder_repetition_penalty":       (None, 1.0),
+        "sequence_bias":                    (None, {}),
+        "remove_invalid_values":            (None, False),
+        "guidance_scale":                   (None, 1.0),
+        "exponential_decay_length_penalty": (None,),
+    }
+    def _is_off(v, off_values):
+        for o in off_values:
+            if o is None:
+                if v is None:
+                    return True
+            elif isinstance(o, bool):
+                if v is o:
+                    return True
+            elif isinstance(v, bool):
+                continue        # True == 1 must not read as "off"
+            elif v == o:        # 1 == 1.0 here is correct: both mean no-op
+                return True
+        return False
+
+    if args.greedy:
+        gc = model.generation_config
+        unsupported = {k: getattr(gc, k, None) for k, off in UNSUPPORTED_OFF.items()
+                       if not _is_off(getattr(gc, k, None), off)}
+        if unsupported:
+            print("\n!! generation_config enables processors the C++ greedy loop "
+                  "does not implement:")
+            for k, v in unsupported.items():
+                print(f"     {k} = {v}")
+            print("   the .gen.bin goldens will NOT be reproducible by "
+                  "nllb-test-generate until these are implemented there.\n")
 
     rng = np.random.default_rng(20240820)
     manifest = {
@@ -119,6 +187,7 @@ def main() -> int:
         "cases": [],
     }
     lines = []
+    gen_lines = []
 
     for name, text in PROMPTS:
         src_path = args.out / f"{name}.ids.bin"
@@ -141,14 +210,18 @@ def main() -> int:
         dec_t = torch.tensor(dec_ids[None, :], dtype=torch.long)
 
         with torch.no_grad():
+            # Always ask for hidden states, even without --per-layer: a
+            # Seq2SeqLMOutput has no `last_hidden_state` (that name belongs to
+            # the bare model, not the ForConditionalGeneration wrapper), and
+            # decoder_hidden_states[-1] is the same tensor .dec.bin wants.
+            # --per-layer now only controls whether the intermediates are
+            # *written*, not whether they are computed.
             out = model(input_ids=src_t, attention_mask=src_am,
                         decoder_input_ids=dec_t,
-                        output_hidden_states=args.per_layer, use_cache=False)
+                        output_hidden_states=True, use_cache=False)
 
         h = np.ascontiguousarray(
-            out.decoder_hidden_states[-1][0].numpy().astype(np.float32)
-            if args.per_layer else
-            out.last_hidden_state[0].numpy().astype(np.float32))
+            out.decoder_hidden_states[-1][0].numpy().astype(np.float32))
         logits = out.logits[0].numpy().astype(np.float32)
         Td = int(h.shape[0])
 
@@ -190,6 +263,15 @@ def main() -> int:
             kw = {}
             if tgt_lang_id is not None:
                 kw["forced_bos_token_id"] = int(tgt_lang_id)
+            # What HF will ACTUALLY force, which is not the same as what we
+            # pass: omitting the kwarg falls back to generation_config, and
+            # mBART-style checkpoints set forced_bos_token_id there. The
+            # manifest must carry the effective value or the C++ loop would
+            # decline to force a token HF forced, and every case would diverge
+            # at position 1 while reading as a graph disagreement.
+            effective_bos = kw.get("forced_bos_token_id",
+                                   getattr(model.generation_config,
+                                           "forced_bos_token_id", None))
             with torch.no_grad():
                 g = model.generate(input_ids=src_t, attention_mask=src_am,
                                    num_beams=1, do_sample=False,
@@ -199,6 +281,38 @@ def main() -> int:
             case["greedy_ids"] = gen.astype(int).tolist()
             case["greedy_text"] = (tok.decode(gen, skip_special_tokens=True)
                                    if tok else None)
+            case["greedy_forced_bos"] = (int(effective_bos)
+                                         if effective_bos is not None else -1)
+            case["greedy_forced_bos_source"] = (
+                "argument" if "forced_bos_token_id" in kw else
+                ("generation_config" if effective_bos is not None else "none"))
+            case["greedy_max_new_tokens"] = int(args.max_new_tokens)
+            # HF counts max_new_tokens from decoder_input_ids, which is just the
+            # start token here, so the sequence can reach 1 + max_new_tokens.
+            # The C++ loop counts the same way; assert it rather than trust it.
+            assert len(gen) <= 1 + args.max_new_tokens, (
+                f"{name}: generate returned {len(gen)} ids for max_new_tokens="
+                f"{args.max_new_tokens}; the C++ loop caps at 1 + max_new_tokens")
+            assert int(gen[0]) == int(dec_start), (
+                f"{name}: generate started with {gen[0]}, not decoder_start "
+                f"{dec_start}")
+            if effective_bos is not None and len(gen) > 1:
+                assert int(gen[1]) == int(effective_bos), (
+                    f"{name}: forced_bos did not land at position 1 "
+                    f"({gen[1]} != {effective_bos}) - the C++ loop forces the "
+                    "first generated position and would diverge immediately")
+            if cfg.pad_token_id in gen[1:].tolist():
+                # Not fatal, but the one case where the un-cached position rule
+                # HF uses in a forward pass and the cached one generate() uses
+                # actually disagree. nllb_generate follows the cached rule
+                # (NLLB_POS_ABSOLUTE); this golden is what proves it.
+                print(f"     {name}: greedy emitted pad_token_id "
+                      f"({cfg.pad_token_id}) - this case exercises "
+                      "NLLB_POS_ABSOLUTE")
+            gen_lines.append(
+                f"{name} {len(gen)} "
+                f"{int(effective_bos) if effective_bos is not None else -1} "
+                f"{int(args.max_new_tokens)} {int(dec_start)}")
 
         with open(args.out / f"{name}.dec.json", "w", encoding="utf-8") as f:
             json.dump(case, f, indent=2, ensure_ascii=False)
@@ -209,6 +323,19 @@ def main() -> int:
               f"{'  +' + str(n_hs) + ' layers' if n_hs else ''}")
 
     (args.out / "manifest_dec.txt").write_text("\n".join(lines) + "\n")
+    if args.greedy:
+        (args.out / "manifest_gen.txt").write_text("\n".join(gen_lines) + "\n")
+        manifest["greedy"] = {
+            "max_new_tokens": int(args.max_new_tokens),
+            "forced_bos_token_id": int(tgt_lang_id) if tgt_lang_id is not None else -1,
+            "note": "per-case greedy_forced_bos is the EFFECTIVE value, which "
+                    "falls back to generation_config when no argument is given",
+            "num_beams": 1,
+            "do_sample": False,
+            "use_cache": True,   # HF default; the C++ loop is un-cached. See
+                                 # tests/test_generate.cpp on why that is fine.
+            "generation_config": model.generation_config.to_diff_dict(),
+        }
     with open(args.out / "manifest_dec.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
     print(f"\nwrote {len(manifest['cases'])} decoder cases to {args.out}/")
