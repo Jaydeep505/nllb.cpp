@@ -1,0 +1,124 @@
+# Fast gate: builds everything and runs all three test binaries against
+# synthetic NLLB models generated on the runner. No model download, no secrets,
+# no large files - tests/make_tiny_model.py builds a random NLLB from a fixed
+# torch seed and both dumpers take --random-ids.
+#
+# What this protects: a ggml submodule bump that changes a kernel, a refactor
+# that breaks the untied-lm_head path, and anyone collapsing NLLB_POS_CUMSUM
+# and NLLB_POS_ABSOLUTE back into one rule (ref-pad catches that one).
+#
+# What it CANNOT protect: anything that only appears on the real 600M - the
+# ~4200 residual magnitudes that forced relative tolerances, and the real logit
+# margin. Synthetic models have O(1) activations. That is what real-model.yml
+# is for.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install python deps
+        # CPU wheels only. Plain `pip install torch` pulls the CUDA build and
+        # ~2.5 GB of nvidia packages, which is wasted bandwidth here and eats
+        # into the runner's 14 GB disk.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy safetensors gguf transformers
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Build synthetic models and convert
+        run: |
+          python tests/make_tiny_model.py models/tiny-nllb
+          python tests/make_tiny_model.py models/deep-nllb \
+              --layers 12 --heads 16 --d-model 256 --ffn 512 --vocab 2000 --untied
+          python tools/convert_nllb_to_gguf.py models/tiny-nllb \
+              --outfile models/tiny-f32.gguf --outtype f32
+          python tools/convert_nllb_to_gguf.py models/deep-nllb \
+              --outfile models/deep-f32.gguf --outtype f32
+
+      - name: Dump goldens (4 fixtures)
+        # ref-eos and ref-pad reuse another fixture's source ids on purpose:
+        # the decoder dumper reads ref/<name>.ids.bin back, so encoder and
+        # decoder goldens cannot drift apart.
+        run: |
+          python tools/dump_reference.py models/tiny-nllb --out ref-tiny/ --per-layer --random-ids
+          python tools/dump_reference.py models/deep-nllb --out ref-deep/ --per-layer --random-ids
+          python tools/dump_decoder_reference.py models/tiny-nllb --out ref-tiny/ \
+              --per-layer --random-ids --greedy --forced-bos 7
+          python tools/dump_decoder_reference.py models/deep-nllb --out ref-deep/ \
+              --per-layer --random-ids --greedy --forced-bos 123
+          mkdir -p ref-eos ref-pad
+          cp ref-tiny/*.ids.bin ref-tiny/manifest.* ref-eos/
+          cp ref-deep/*.ids.bin ref-deep/manifest.* ref-pad/
+          # no forced bos -> the model emits eos at step 0 -> the eos stop path
+          python tools/dump_decoder_reference.py models/tiny-nllb --out ref-eos/ \
+              --random-ids --greedy
+          # forced bos = pad_id -> the only fixture that separates the two
+          # position rules. 7 of 9 cases fail here under NLLB_POS_CUMSUM.
+          python tools/dump_decoder_reference.py models/deep-nllb --out ref-pad/ \
+              --random-ids --greedy --forced-bos 1
+
+      - name: Encoder gate
+        run: |
+          ./build/bin/nllb-test models/tiny-f32.gguf ref-tiny/ -t 4
+          ./build/bin/nllb-test models/deep-f32.gguf ref-deep/ -t 4
+
+      - name: Decoder gate
+        run: |
+          ./build/bin/nllb-test-decoder models/tiny-f32.gguf ref-tiny/ -t 4
+          ./build/bin/nllb-test-decoder models/deep-f32.gguf ref-deep/ -t 4
+
+      - name: Generate gate
+        run: |
+          ./build/bin/nllb-test-generate models/tiny-f32.gguf ref-tiny/ -t 4
+          ./build/bin/nllb-test-generate models/tiny-f32.gguf ref-eos/  -t 4
+          ./build/bin/nllb-test-generate models/deep-f32.gguf ref-pad/  -t 4
+          ./build/bin/nllb-test-generate models/deep-f32.gguf ref-deep/ -t 4 --check-modes
+
+      - name: Test the tests - corrupted weights must turn the gates RED
+        # A green suite only proves the suite did not fire. Break one tensor on
+        # purpose and assert both gates notice; if either exits 0 here, the
+        # suite has stopped testing anything and every green run above is
+        # meaningless.
+        run: |
+          set -e
+          for spec in "dec.blk.0.attn_q.weight transpose" "position_embd.weight shift"; do
+            set -- $spec
+            cp models/deep-f32.gguf /tmp/bad.gguf
+            python tests/corrupt_gguf.py /tmp/bad.gguf --tensor "$1" --mode "$2"
+            if ./build/bin/nllb-test-decoder /tmp/bad.gguf ref-deep/ -t 4 > /dev/null 2>&1; then
+              echo "::error::decoder gate stayed green with $1 --mode $2"
+              exit 1
+            fi
+            if ./build/bin/nllb-test-generate /tmp/bad.gguf ref-deep/ -t 4 > /dev/null 2>&1; then
+              echo "::error::generate gate stayed green with $1 --mode $2"
+              exit 1
+            fi
+            echo "ok: both gates fired on $1 --mode $2"
+          done
