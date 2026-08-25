@@ -349,9 +349,10 @@ bool nllb_decode(const nllb_model & model,
                  const std::vector<int32_t> & src_ids,
                  int n_threads,
                  bool want_hidden_states,
-                 bool want_logits,
+                 int logits_mode,
                  nllb_decode_result & out,
-                 std::string & err) {
+                 std::string & err,
+                 int pos_mode) {
     const nllb_hparams & hp = model.hp;
     const int Td = (int) dec_ids.size();
     const int Ts = enc.n_tokens;
@@ -380,6 +381,13 @@ bool nllb_decode(const nllb_model & model,
         }
     }
 
+    const bool want_logits = logits_mode != NLLB_LOGITS_NONE;
+    const int  logit_rows  = logits_mode == NLLB_LOGITS_LAST ? 1 : Td;
+    // Size the logits budget from the tensor that actually produces them, not
+    // from nllb.vocab_size - that key is optional metadata and defaults to 0,
+    // which would silently budget nothing for a [vocab, Td] result.
+    const int  vocab_rows  = (int) model.lm_head()->ne[1];
+
     size_t per_layer = (size_t) 48 * Td * D
                      + (size_t)  8 * Td * Td * H
                      + (size_t) 12 * Td * Ts * H
@@ -387,7 +395,7 @@ bool nllb_decode(const nllb_model & model,
                      + (size_t)  6 * Td * hp.n_dec_ff;
     size_t mem = ((size_t) L * per_layer + (size_t) 64 * Td * D
                   + (size_t) 2 * Ts * D) * sizeof(float);
-    if (want_logits) mem += (size_t) 3 * Td * hp.n_vocab * sizeof(float);
+    if (want_logits) mem += (size_t) 3 * logit_rows * vocab_rows * sizeof(float);
     mem = mem * 2 + 128u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 8192
         + ggml_graph_overhead();
 
@@ -406,17 +414,33 @@ bool nllb_decode(const nllb_model & model,
     ggml_set_name(inp_pos, "dec_pos");
     std::memcpy(inp_ids->data, dec_ids.data(), Td * sizeof(int32_t));
 
-    // Same rule as the encoder: cumsum(mask) * mask + pad_id, against a table
-    // built with offset 2. With no KV cache there is no past length to add, so
-    // target token j reads row j + 2 - but keep the general form, because the
-    // incremental path only differs by starting the running count at n_past.
+    // Position ids. The two rules below agree on any sequence without pad_id in
+    // it, which is every golden case here, and disagree as soon as one appears.
+    //
+    //   NLLB_POS_CUMSUM   cumsum(mask) * mask + pad_id
+    //                     what HF computes in a forward pass with use_cache=
+    //                     False, i.e. what the teacher-forced goldens contain.
+    //                     A pad shifts every later position down by one.
+    //
+    //   NLLB_POS_ABSOLUTE (j + 1) + pad_id for a non-pad token, pad_id for a
+    //                     pad. What HF computes inside generate(): with a cache
+    //                     it feeds one token with past_key_values_length = j,
+    //                     and its formula is (cumsum(mask) + n_past) * mask +
+    //                     pad_id where the cumsum restarts every step - so
+    //                     n_past is inside the mask and earlier pads do not
+    //                     shift anything.
+    //
+    // This is HF being inconsistent with itself, not a choice made here. The
+    // caller picks the rule that matches the reference it is being diffed
+    // against; see nllb_pos_mode in nllb.h.
     {
         int32_t * p = (int32_t *) inp_pos->data;
         int32_t run = 0;
         for (int j = 0; j < Td; ++j) {
             const bool is_pad = (dec_ids[j] == hp.pad_id);
             if (!is_pad) ++run;
-            p[j] = is_pad ? hp.pad_id : run + hp.pad_id;
+            const int32_t idx = (pos_mode == NLLB_POS_ABSOLUTE) ? (j + 1) : run;
+            p[j] = is_pad ? hp.pad_id : idx + hp.pad_id;
         }
     }
 
@@ -516,9 +540,18 @@ bool nllb_decode(const nllb_model & model,
     // lm_head, tied to token_embd unless the checkpoint untied it. ne of the
     // embedding is [D, vocab], so mul_mat against [D, Td] gives [vocab, Td] -
     // row-major logits[t][v], no transpose anywhere.
+    //
+    // NLLB_LOGITS_LAST projects only the final row. Greedy decoding reads
+    // nothing else, and on the 600M this is a [256206, 1024] x [1024, Td]
+    // matmul - the dominant cost of the whole graph at Td > 1.
     ggml_tensor * logits = nullptr;
     if (want_logits) {
-        logits = ggml_mul_mat(ctx, model.lm_head(), cur);
+        ggml_tensor * lm_in = cur;
+        if (logits_mode == NLLB_LOGITS_LAST && Td > 1) {
+            lm_in = ggml_cont(ctx, ggml_view_2d(ctx, cur, D, 1, cur->nb[1],
+                                                (size_t)(Td - 1) * cur->nb[1]));
+        }
+        logits = ggml_mul_mat(ctx, model.lm_head(), lm_in);
         ggml_set_name(logits, "logits");
         ggml_build_forward_expand(gf, logits);
     }
@@ -542,8 +575,10 @@ bool nllb_decode(const nllb_model & model,
     std::memcpy(out.output.data(), cur->data, out.output.size() * sizeof(float));
 
     out.logits.clear();
+    out.n_logit_rows = 0;
     if (want_logits) {
-        out.logits.resize((size_t) Td * out.n_vocab);
+        out.n_logit_rows = logit_rows;
+        out.logits.resize((size_t) logit_rows * out.n_vocab);
         std::memcpy(out.logits.data(), logits->data, out.logits.size() * sizeof(float));
     }
 
@@ -558,5 +593,137 @@ bool nllb_decode(const nllb_model & model,
     }
 
     ggml_free(ctx);
+    return true;
+}
+
+// --------------------------------------------------------------------------
+// greedy generation
+//
+// One encoder pass, then one decoder pass per emitted token over the whole
+// prefix. No KV cache: step t rebuilds and recomputes everything steps
+// 0..t-1 already computed, which is O(n^2) in the target length and exactly
+// what the cached path will be diffed against.
+//
+// Parity with HF generate(num_beams=1, do_sample=False):
+//   - the sequence starts at [decoder_start_token_id] and that token counts as
+//     position 0, so max_new_tokens caps the result at 1 + max_new_tokens;
+//   - forced_bos_token_id replaces the argmax at the FIRST generated position
+//     (HF does it by masking every other logit to -inf; same outcome, and the
+//     unforced argmax is kept in the trace so a divergence is still readable);
+//   - eos terminates and is included in the output;
+//   - ties go to the lower token id, which is what torch.argmax does;
+//   - positions follow NLLB_POS_ABSOLUTE, because generate() decodes with a
+//     cache and HF's cached position rule is not the same as its un-cached one
+//     once a pad_id appears in the prefix. See nllb_pos_mode in nllb.h.
+// --------------------------------------------------------------------------
+
+bool nllb_generate(const nllb_model & model,
+                   const std::vector<int32_t> & src_ids,
+                   const nllb_generate_params & params,
+                   int n_threads,
+                   nllb_generate_result & out,
+                   std::string & err) {
+    const nllb_hparams & hp = model.hp;
+
+    if (!model.has_decoder) {
+        err = "GGUF has no decoder (converted with --encoder-only?)";
+        return false;
+    }
+    if (src_ids.empty())            { err = "empty source"; return false; }
+    if (params.max_new_tokens <= 0) { err = "max_new_tokens must be > 0"; return false; }
+
+    // Same restriction as nllb_decode, checked up front so the caller is told
+    // before an encoder pass is spent on it.
+    for (int32_t id : src_ids) {
+        if (id == hp.pad_id) {
+            err = "padded source sequences are not supported yet "
+                  "(cross-attention is unmasked); see nllb_decode";
+            return false;
+        }
+    }
+
+    const int32_t eos   = params.eos_id       >= 0 ? params.eos_id       : hp.eos_id;
+    const int32_t start = params.dec_start_id >= 0 ? params.dec_start_id : hp.dec_start_id;
+
+    // These arrive from a manifest file and from CLI flags, and go straight
+    // into ggml_get_rows as indices. Out of range, ggml aborts the process on
+    // an assert; a CI run deserves a message instead of a stack trace.
+    const int32_t n_vocab = (int32_t) model.lm_head()->ne[1];
+    const int32_t embd_rows = (int32_t) model.tok_embd->ne[1];
+    const int32_t id_limit = n_vocab < embd_rows ? n_vocab : embd_rows;
+    struct { const char * what; int32_t id; } checked[] = {
+        { "decoder_start_token_id", start },
+        { "eos_id",                 eos   },
+        { "forced_bos_id",          params.forced_bos_id },
+    };
+    for (const auto & c : checked) {
+        if (c.id < -1 || c.id >= id_limit) {
+            err = std::string(c.what) + " = " + std::to_string(c.id) +
+                  " is out of range [0, " + std::to_string(id_limit) + ")";
+            return false;
+        }
+    }
+    if (start < 0) { err = "decoder_start_token_id must be >= 0"; return false; }
+    if (eos   < 0) { err = "eos_id must be >= 0"; return false; }
+
+    out = nllb_generate_result();
+    out.n_src = (int32_t) src_ids.size();
+    out.stop  = NLLB_STOP_MAX_NEW;
+
+    nllb_encode_result enc;
+    if (!nllb_encode(model, src_ids, n_threads, false, enc, err)) return false;
+
+    out.ids.reserve((size_t) params.max_new_tokens + 1);
+    out.ids.push_back(start);
+
+    for (int step = 0; step < params.max_new_tokens; ++step) {
+        // nllb_decode accepts Td == n_ctx, so the prefix may still be decoded
+        // when it has exactly n_ctx tokens; only a longer one must be refused.
+        if (hp.n_ctx > 0 && (int) out.ids.size() > hp.n_ctx) {
+            out.stop = NLLB_STOP_CONTEXT;
+            break;
+        }
+
+        nllb_decode_result dec;
+        // NLLB_POS_ABSOLUTE, not the teacher-forced default: the goldens come
+        // from generate(), which decodes incrementally. The two rules differ
+        // only if the model emits pad_id, and then this is the one HF used.
+        if (!nllb_decode(model, enc, out.ids, src_ids, n_threads,
+                         /*want_hidden_states=*/false, NLLB_LOGITS_LAST,
+                         dec, err, NLLB_POS_ABSOLUTE)) {
+            return false;
+        }
+        if (dec.n_logit_rows != 1 || (int) dec.logits.size() != dec.n_vocab) {
+            err = "decoder returned unexpected logits shape";
+            return false;
+        }
+
+        // argmax plus runner-up, in one pass. Strict > keeps the first index on
+        // a tie, matching torch.argmax.
+        const float * p = dec.logits.data();
+        const int n = dec.n_vocab;
+        int best = 0, second = -1;
+        for (int i = 1; i < n; ++i) {
+            if (p[i] > p[best]) { second = best; best = i; }
+            else if (second < 0 || p[i] > p[second]) second = i;
+        }
+
+        nllb_generate_step s;
+        s.argmax = best;
+        s.logit  = p[best];
+        s.margin = second >= 0 ? p[best] - p[second] : 0.0f;
+        s.forced = (step == 0 && params.forced_bos_id >= 0);
+        s.token  = s.forced ? params.forced_bos_id : best;
+
+        out.ids.push_back(s.token);
+        out.steps.push_back(s);
+
+        if (s.token == eos) {
+            out.stop    = NLLB_STOP_EOS;
+            out.hit_eos = true;
+            break;
+        }
+    }
+
     return true;
 }

@@ -116,9 +116,44 @@ struct nllb_decode_result {
     int32_t n_tokens = 0;
     int32_t d_model  = 0;
     int32_t n_vocab  = 0;
+    int32_t n_logit_rows = 0;                       // Td, or 1 for NLLB_LOGITS_LAST
     std::vector<float>              output;         // [Td, d_model] row-major
-    std::vector<float>              logits;         // [Td, n_vocab], if requested
+    std::vector<float>              logits;         // [n_logit_rows, n_vocab]
     std::vector<std::vector<float>> hidden_states;  // n_dec_layer + 1 of [Td, d_model]
+};
+
+// How much of the lm_head to actually run. Greedy decoding only ever reads the
+// last row, and on the 600M that row is 1/Td of a [Td, 256206] matmul - the
+// single most expensive op in the graph. The values are chosen so the old
+// `bool want_logits` call sites keep their meaning: false -> NONE, true -> ALL.
+enum nllb_logits_mode {
+    NLLB_LOGITS_NONE = 0,
+    NLLB_LOGITS_ALL  = 1,
+    NLLB_LOGITS_LAST = 2,
+};
+
+// How decoder position ids are derived from dec_ids. These two agree on every
+// sequence with no pad_id in it, and disagree the moment one appears - which
+// is not a corner case, because HF itself uses one rule in a full forward pass
+// and the other inside generate().
+//
+//   HF, no cache (what the teacher-forced goldens are dumped from):
+//       (cumsum(mask) + 0) * mask + pad_id          -> NLLB_POS_CUMSUM
+//   HF, with cache (what generate() runs, one token at a time):
+//       (cumsum(mask) + n_past) * mask + pad_id
+//     with the cumsum restarting each step, so for a single new token this is
+//       index + 1 + pad_id, or pad_id if the token IS pad -> NLLB_POS_ABSOLUTE
+//
+// The difference: CUMSUM makes a pad *shift every later position down by one*,
+// ABSOLUTE does not. So a decoder that emits pad_id mid-sequence gets different
+// positions from HF depending on whether HF was caching. Teacher-forced
+// verification must use CUMSUM (that is what its goldens contain) and greedy
+// generation must use ABSOLUTE (that is what generate() produced). Picking one
+// globally would make one of the two gates unsatisfiable on any case where the
+// model emits pad.
+enum nllb_pos_mode {
+    NLLB_POS_CUMSUM   = 0,   // HF forward pass with use_cache=False
+    NLLB_POS_ABSOLUTE = 1,   // HF generate() / any incremental path
 };
 
 // Teacher-forced decoder pass: the whole target sequence at once, causally
@@ -136,6 +171,71 @@ bool nllb_decode(const nllb_model & model,
                  const std::vector<int32_t> & src_ids,  // may be empty; pad check only
                  int n_threads,
                  bool want_hidden_states,
-                 bool want_logits,
+                 int logits_mode,            // nllb_logits_mode; bool still works
                  nllb_decode_result & out,
-                 std::string & err);
+                 std::string & err,
+                 int pos_mode = NLLB_POS_CUMSUM);
+
+// --------------------------------------------------------------------------
+// greedy generation
+//
+// Mirrors HF generate(num_beams=1, do_sample=False) exactly, and deliberately
+// nothing more: argmax over the full vocabulary, forced_bos_token_id at the
+// first generated position, stop on eos or max_new_tokens. No sampling, no
+// repetition penalty, no length penalty - anything extra would be untestable
+// against ref/<name>.gen.bin, which is the only golden that exists.
+//
+// There is no KV cache yet: each step re-decodes the whole prefix from
+// scratch, which is O(n^2) and correct. That is the point of doing it in this
+// order - the cached path is then diffed against this one rather than against
+// torch, so a cache bug cannot hide behind a graph bug.
+// --------------------------------------------------------------------------
+
+struct nllb_generate_params {
+    // HF counts max_new_tokens from the decoder_start token, so the returned
+    // sequence is at most 1 + max_new_tokens long.
+    int32_t max_new_tokens = 24;
+    // Target language code, e.g. the id of "deu_Latn". -1 disables forcing.
+    // Without it NLLB happily produces fluent output in the wrong language.
+    int32_t forced_bos_id  = -1;
+    int32_t eos_id         = -1;   // -1 -> model's
+    int32_t dec_start_id   = -1;   // -1 -> model's (eos for NLLB, not bos)
+};
+
+// Per-step trace. `margin` is top1 - top2 over the vocabulary *before* forcing:
+// it is what separates "the loop diverged because the graph is wrong" (margin
+// of whole logits) from "the argmax flipped on a coin toss" (margin ~1e-5, i.e.
+// float noise). The decoder gate has ULPs for this; generation has margins.
+struct nllb_generate_step {
+    int32_t token   = 0;      // the token actually emitted
+    int32_t argmax  = 0;      // unforced argmax, == token unless forced
+    float   logit   = 0.0f;   // logit of `argmax`
+    float   margin  = 0.0f;   // logit(top1) - logit(top2)
+    bool    forced  = false;  // true only at the forced_bos position
+};
+
+// Why the loop stopped. Distinguishing MAX_NEW from CONTEXT matters: the first
+// is the caller's own limit, the second is a truncation the caller never asked
+// for and would otherwise have to infer from a length.
+enum nllb_stop_reason {
+    NLLB_STOP_EOS     = 0,
+    NLLB_STOP_MAX_NEW = 1,
+    NLLB_STOP_CONTEXT = 2,   // ran out of n_ctx before eos
+};
+
+struct nllb_generate_result {
+    // Includes the decoder_start token at [0] and the eos at the end, exactly
+    // like HF's generate() output, so it can be memcmp'd against gen.bin.
+    std::vector<int32_t>            ids;
+    std::vector<nllb_generate_step> steps;   // one per emitted token
+    int32_t stop    = NLLB_STOP_MAX_NEW;
+    bool    hit_eos = false;                 // stop == NLLB_STOP_EOS
+    int32_t n_src   = 0;
+};
+
+bool nllb_generate(const nllb_model & model,
+                   const std::vector<int32_t> & src_ids,
+                   const nllb_generate_params & params,
+                   int n_threads,
+                   nllb_generate_result & out,
+                   std::string & err);
