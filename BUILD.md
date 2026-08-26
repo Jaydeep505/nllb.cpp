@@ -7,8 +7,10 @@ tests/test_encoder.cpp  golden diff against ref/, with per-layer bisect
 CMakeLists.txt        vendors ggml, builds bin/nllb-test
 ```
 
-Later steps add `bin/nllb-test-decoder` (see `DECODER.md`) and
-`bin/nllb-test-generate` (see `GENERATE.md`) to the same build.
+Later steps add `bin/nllb-test-decoder` (see `DECODER.md`),
+`bin/nllb-test-generate` (see `GENERATE.md`) and `bin/nllb-test-cache`
+(see `CACHE.md`) to the same build. The last of those needs no reference dump —
+it compares the KV-cached decoder against the un-cached one.
 
 ## Build
 

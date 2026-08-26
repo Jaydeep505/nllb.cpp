@@ -101,6 +101,28 @@ jobs:
           ./build/bin/nllb-test-generate models/deep-f32.gguf ref-pad/  -t 4
           ./build/bin/nllb-test-generate models/deep-f32.gguf ref-deep/ -t 4 --check-modes
 
+      - name: KV cache gate - cached vs un-cached, no goldens involved
+        # This one compares two C++ paths against each other, so it needs no
+        # reference dump; it reads manifest_gen.txt only to reuse the same nine
+        # sources. --chunk feeds the prefix several tokens at a time, which is
+        # the only thing that exercises the causal mask's n_past offset - at one
+        # token per call an offset that is too large masks nothing and passes.
+        run: |
+          ./build/bin/nllb-test-cache models/tiny-f32.gguf ref-tiny/ -t 4
+          ./build/bin/nllb-test-cache models/tiny-f32.gguf ref-eos/  -t 4
+          ./build/bin/nllb-test-cache models/deep-f32.gguf ref-deep/ -t 4
+          ./build/bin/nllb-test-cache models/deep-f32.gguf ref-pad/  -t 4
+
+      - name: Generate gate, through the cache
+        # Closes the loop against HF directly rather than by composition. If
+        # this passes and nllb-test-cache does not, the cache and the un-cached
+        # path are both wrong in the same direction - which is worth knowing.
+        run: |
+          ./build/bin/nllb-test-generate models/tiny-f32.gguf ref-tiny/ -t 4 --use-cache
+          ./build/bin/nllb-test-generate models/tiny-f32.gguf ref-eos/  -t 4 --use-cache
+          ./build/bin/nllb-test-generate models/deep-f32.gguf ref-pad/  -t 4 --use-cache
+          ./build/bin/nllb-test-generate models/deep-f32.gguf ref-deep/ -t 4 --use-cache
+
       - name: Test the tests - corrupted weights must turn the gates RED
         # A green suite only proves the suite did not fire. Break one tensor on
         # purpose and assert both gates notice; if either exits 0 here, the
@@ -122,3 +144,10 @@ jobs:
             fi
             echo "ok: both gates fired on $1 --mode $2"
           done
+
+      # Deliberately NOT asserted above: nllb-test-cache stays GREEN on a
+      # corrupted tensor, because both sides of its comparison read the same
+      # corrupted weight and cancel. That is not a hole, it is the division of
+      # labour - the decoder and generate gates own "are the weights and the
+      # graph right", the cache gate owns "does caching change the answer".
+      # Reading a green cache gate as evidence about the model is the mistake.

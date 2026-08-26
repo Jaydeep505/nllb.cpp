@@ -177,6 +177,99 @@ bool nllb_decode(const nllb_model & model,
                  int pos_mode = NLLB_POS_CUMSUM);
 
 // --------------------------------------------------------------------------
+// KV cache
+//
+// The un-cached decoder above recomputes the whole prefix every step. Almost
+// all of that is provably redundant: block il's K and V for token t depend on
+// token t alone once the prefix below it is fixed, and causality guarantees it
+// is fixed. Cross-attention is stronger still - its K and V come from the
+// encoder output, which does not depend on the decoder step at all, so they are
+// computed once per source sentence rather than once per token.
+//
+// WHAT THIS IS DIFFED AGAINST. Not torch. The un-cached path is already proven
+// exact against HF generate() on the real 600M (step 4), so the cache is
+// verified against *it* - tests/test_cache.cpp. That keeps a cache bug from
+// hiding behind a graph bug and vice versa, and it means the gate needs no
+// goldens, no python and no download.
+//
+// THE POSITION RULE IS NOT NEGOTIABLE HERE. A cached step feeds one token with
+// past_key_values_length = n_past, and HF's rule puts n_past *inside* the mask
+// while restarting the cumsum, so it reduces to (absolute index + 1 + pad_id).
+// That is NLLB_POS_ABSOLUTE, and it is what nllb_generate already uses. The
+// teacher-forced NLLB_POS_CUMSUM rule cannot be reproduced incrementally - the
+// running count is a property of the whole prefix - and asking for it is a
+// symptom of diffing against the wrong reference, so it is rejected rather than
+// approximated. See trap 12 in claude/handoff.md.
+//
+// Layout: everything is stored in the shape attention consumes, so a step does
+// no permuting and no copying of the history at all.
+//
+//   k_self [HD, n_ctx, H]    v_self [n_ctx, HD, H]     grows one slot per token
+//   k_cross[HD, n_src, H]    v_cross[n_src, HD, H]     built once, then frozen
+// --------------------------------------------------------------------------
+
+struct nllb_kv_cache {
+    ggml_context * ctx = nullptr;   // owns the four tensor sets below
+
+    int32_t n_ctx   = 0;   // capacity in decoder tokens
+    int32_t n_past  = 0;   // tokens currently stored in the self-attention half
+    int32_t n_src   = 0;   // Ts the cross-attention half was built from
+    int32_t d_model = 0;
+    int32_t n_head  = 0;
+    int32_t n_layer = 0;
+
+    std::vector<ggml_tensor *> k_self;    // per layer, [HD, n_ctx, H]
+    std::vector<ggml_tensor *> v_self;    // per layer, [n_ctx, HD, H]  (transposed)
+    std::vector<ggml_tensor *> k_cross;   // per layer, [HD, n_src, H]
+    std::vector<ggml_tensor *> v_cross;   // per layer, [n_src, HD, H]  (transposed)
+
+    nllb_kv_cache() = default;
+    ~nllb_kv_cache();
+    // Owns a ggml_context; copying it would double-free. Moving is not needed.
+    nllb_kv_cache(const nllb_kv_cache &)             = delete;
+    nllb_kv_cache & operator=(const nllb_kv_cache &) = delete;
+};
+
+// Allocates the cache and runs ONE graph that fills the cross-attention half
+// from `enc`. After this the encoder result is no longer needed by the decode
+// steps - which is the whole point, and also why `enc` is not held by pointer.
+//
+// n_ctx_cache is the longest decoder sequence this cache will hold, counting
+// the decoder_start token. Asking for more than the model's n_ctx is refused.
+bool nllb_kv_cache_init(const nllb_model & model,
+                        const nllb_encode_result & enc,
+                        int n_ctx_cache,
+                        int n_threads,
+                        nllb_kv_cache & cache,
+                        std::string & err);
+
+// Rewind the self-attention half without touching the cross-attention half.
+// Valid only for the same source sentence; use a fresh init for a new one.
+void nllb_kv_cache_reset(nllb_kv_cache & cache);
+
+// One incremental step. `new_ids` are the tokens NOT yet in the cache - one per
+// step during generation, or the whole starting prefix on the first call.
+// Positions are NLLB_POS_ABSOLUTE, derived from cache.n_past; the causal mask
+// is offset by n_past so the new rows see the whole history and nothing beyond
+// themselves.
+//
+// out.output and out.hidden_states cover the NEW tokens only, [Tn, d_model].
+// hidden_states keeps the same indexing as nllb_decode (n_dec_layer + 1
+// entries, entry i = input to block i), which is what lets tests/test_cache.cpp
+// bisect a divergence to a layer instead of just reporting that ids differ.
+//
+// On success cache.n_past advances by Tn. On failure the cache is left
+// untouched and must be considered undefined only if err mentions the graph.
+bool nllb_decode_cached(const nllb_model & model,
+                        nllb_kv_cache & cache,
+                        const std::vector<int32_t> & new_ids,
+                        int n_threads,
+                        bool want_hidden_states,
+                        int logits_mode,            // nllb_logits_mode
+                        nllb_decode_result & out,
+                        std::string & err);
+
+// --------------------------------------------------------------------------
 // greedy generation
 //
 // Mirrors HF generate(num_beams=1, do_sample=False) exactly, and deliberately
@@ -200,6 +293,11 @@ struct nllb_generate_params {
     int32_t forced_bos_id  = -1;
     int32_t eos_id         = -1;   // -1 -> model's
     int32_t dec_start_id   = -1;   // -1 -> model's (eos for NLLB, not bos)
+    // Off by default, deliberately. The un-cached path is the one proven exact
+    // against HF, so it stays the reference the cache is diffed against; a
+    // default that silently switched the reference out from under the step-4
+    // gate would make that gate stop testing what its name says.
+    bool    use_cache      = false;
 };
 
 // Per-step trace. `margin` is top1 - top2 over the vocabulary *before* forcing:
@@ -231,6 +329,7 @@ struct nllb_generate_result {
     int32_t stop    = NLLB_STOP_MAX_NEW;
     bool    hit_eos = false;                 // stop == NLLB_STOP_EOS
     int32_t n_src   = 0;
+    bool    used_cache = false;              // which path actually ran
 };
 
 bool nllb_generate(const nllb_model & model,

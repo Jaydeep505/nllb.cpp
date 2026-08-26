@@ -597,6 +597,397 @@ bool nllb_decode(const nllb_model & model,
 }
 
 // --------------------------------------------------------------------------
+// KV cache
+//
+// Storage is in the shape attention consumes, not the shape the projections
+// produce. The un-cached path spends a permute + ggml_cont on K and V every
+// block; doing that here would copy the entire history once per block per step
+// and give back most of what the cache is for. So the write does the permute
+// once, into the slot for the new token, and the read is a plain view.
+//
+//   k_self [HD, n_ctx, H]   token t at row t of each head slice
+//   v_self [n_ctx, HD, H]   transposed, because mul_mat wants (n_kv, HD, H)
+//
+// Both halves live in a ggml_context the cache owns. The per-step graph gets a
+// context of its own and refers to these tensors across contexts, exactly as it
+// already does for the model weights.
+// --------------------------------------------------------------------------
+
+nllb_kv_cache::~nllb_kv_cache() {
+    if (ctx) { ggml_free(ctx); ctx = nullptr; }
+}
+
+void nllb_kv_cache_reset(nllb_kv_cache & cache) {
+    cache.n_past = 0;
+}
+
+bool nllb_kv_cache_init(const nllb_model & model,
+                        const nllb_encode_result & enc,
+                        int n_ctx_cache,
+                        int n_threads,
+                        nllb_kv_cache & cache,
+                        std::string & err) {
+    const nllb_hparams & hp = model.hp;
+    const int D  = hp.d_model;
+    const int H  = hp.n_dec_head;
+    const int HD = hp.dec_head_dim();
+    const int L  = hp.n_dec_layer;
+    const int Ts = enc.n_tokens;
+
+    if (!model.has_decoder) { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
+    if (n_ctx_cache <= 0)   { err = "kv cache capacity must be > 0"; return false; }
+    if (Ts <= 0)            { err = "empty encoder output"; return false; }
+    if (enc.d_model != D)   { err = "encoder output d_model mismatch"; return false; }
+    if ((int) enc.output.size() != Ts * D) { err = "encoder output size mismatch"; return false; }
+    if (hp.n_ctx > 0 && n_ctx_cache > hp.n_ctx) {
+        err = "kv cache capacity " + std::to_string(n_ctx_cache) +
+              " exceeds the model's n_ctx " + std::to_string(hp.n_ctx);
+        return false;
+    }
+
+    if (cache.ctx) { ggml_free(cache.ctx); cache.ctx = nullptr; }
+    cache.k_self.clear();  cache.v_self.clear();
+    cache.k_cross.clear(); cache.v_cross.clear();
+
+    // Four tensors per layer. The self half is sized by capacity, the cross
+    // half by the source length - which is why a new sentence needs a new init
+    // and not a reset.
+    const size_t cache_floats = (size_t) L * 2 * ((size_t) n_ctx_cache * D + (size_t) Ts * D);
+    ggml_init_params cp = {};
+    cp.mem_size   = cache_floats * sizeof(float)
+                  + (size_t) ggml_tensor_overhead() * (4 * L + 16)
+                  + 1024u * 1024;
+    cp.mem_buffer = nullptr;
+    cp.no_alloc   = false;
+    cache.ctx = ggml_init(cp);
+    if (!cache.ctx) { err = "ggml_init failed (kv cache)"; return false; }
+
+    cache.n_ctx   = n_ctx_cache;
+    cache.n_past  = 0;
+    cache.n_src   = Ts;
+    cache.d_model = D;
+    cache.n_head  = H;
+    cache.n_layer = L;
+
+    cache.k_self.resize(L);  cache.v_self.resize(L);
+    cache.k_cross.resize(L); cache.v_cross.resize(L);
+    for (int il = 0; il < L; ++il) {
+        cache.k_self[il]  = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, HD, n_ctx_cache, H);
+        cache.v_self[il]  = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, n_ctx_cache, HD, H);
+        cache.k_cross[il] = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, HD, Ts, H);
+        cache.v_cross[il] = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, Ts, HD, H);
+        if (!cache.k_self[il] || !cache.v_self[il] ||
+            !cache.k_cross[il] || !cache.v_cross[il]) {
+            err = "kv cache allocation failed at layer " + std::to_string(il);
+            ggml_free(cache.ctx); cache.ctx = nullptr;
+            return false;
+        }
+    }
+
+    // ---- fill the cross-attention half: one graph, once per source ----
+    size_t mem = ((size_t) L * 8 * Ts * D + (size_t) 8 * Ts * D) * sizeof(float);
+    mem = mem * 2 + 32u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 1024
+        + ggml_graph_overhead();
+
+    ggml_init_params ip = {};
+    ip.mem_size   = mem;
+    ip.mem_buffer = nullptr;
+    ip.no_alloc   = false;
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) { err = "ggml_init failed (cross-attention cache build)";
+                ggml_free(cache.ctx); cache.ctx = nullptr; return false; }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    ggml_tensor * enc_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, Ts);
+    ggml_set_name(enc_t, "enc_out");
+    std::memcpy(enc_t->data, enc.output.data(), (size_t) Ts * D * sizeof(float));
+
+    for (int il = 0; il < L; ++il) {
+        const nllb_dec_layer & l = model.dec[il];
+
+        // Identical arithmetic to the un-cached path's cK/cV, including the
+        // bias and the absence of the attention scale (that goes on Q). If this
+        // ever stops matching, tests/test_cache.cpp reports it as a
+        // cross-attention divergence at layer il rather than as wrong ids.
+        ggml_tensor * cK = ggml_add(ctx, ggml_mul_mat(ctx, l.cwk, enc_t), l.cbk);
+        ggml_tensor * cV = ggml_add(ctx, ggml_mul_mat(ctx, l.cwv, enc_t), l.cbv);
+
+        cK = ggml_permute(ctx, ggml_reshape_3d(ctx, cK, HD, H, Ts), 0, 2, 1, 3); // (HD, Ts, H)
+        cV = ggml_permute(ctx, ggml_reshape_3d(ctx, cV, HD, H, Ts), 1, 2, 0, 3); // (Ts, HD, H)
+
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, cK, cache.k_cross[il]));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, cV, cache.v_cross[il]));
+    }
+
+    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
+    ggml_free(ctx);
+    if (st != GGML_STATUS_SUCCESS) {
+        err = "ggml_graph_compute failed (cross-attention cache), status " +
+              std::to_string((int) st);
+        ggml_free(cache.ctx); cache.ctx = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool nllb_decode_cached(const nllb_model & model,
+                        nllb_kv_cache & cache,
+                        const std::vector<int32_t> & new_ids,
+                        int n_threads,
+                        bool want_hidden_states,
+                        int logits_mode,
+                        nllb_decode_result & out,
+                        std::string & err) {
+    const nllb_hparams & hp = model.hp;
+    const int Tn = (int) new_ids.size();
+    const int D  = hp.d_model;
+    const int H  = hp.n_dec_head;
+    const int HD = hp.dec_head_dim();
+    const int L  = hp.n_dec_layer;
+    const int Ts = cache.n_src;
+
+    if (!model.has_decoder) { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
+    if (!cache.ctx)         { err = "kv cache is not initialised (call nllb_kv_cache_init)"; return false; }
+    if (Tn <= 0)            { err = "empty decoder input"; return false; }
+    if (cache.n_layer != L || cache.d_model != D || cache.n_head != H) {
+        err = "kv cache was built for a different model shape";
+        return false;
+    }
+    const int n_past = cache.n_past;
+    const int n_kv   = n_past + Tn;
+    if (n_kv > cache.n_ctx) {
+        err = "kv cache is full: " + std::to_string(n_past) + " + " +
+              std::to_string(Tn) + " > capacity " + std::to_string(cache.n_ctx);
+        return false;
+    }
+
+    const bool want_logits = logits_mode != NLLB_LOGITS_NONE;
+    const int  logit_rows  = logits_mode == NLLB_LOGITS_LAST ? 1 : Tn;
+    const int  vocab_rows  = (int) model.lm_head()->ne[1];
+
+    // No Ts*D term per layer: the cross-attention projections are already in
+    // the cache, which is the largest single saving here at short target
+    // lengths. What is left scales with Tn, not with the prefix.
+    size_t per_layer = (size_t) 48 * Tn * D
+                     + (size_t) 12 * Tn * n_kv * H
+                     + (size_t) 12 * Tn * Ts  * H
+                     + (size_t)  6 * Tn * hp.n_dec_ff;
+    size_t mem = ((size_t) L * per_layer + (size_t) 64 * Tn * D) * sizeof(float);
+    if (want_logits) mem += (size_t) 3 * logit_rows * vocab_rows * sizeof(float);
+    mem = mem * 2 + 64u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 8192
+        + ggml_graph_overhead();
+
+    ggml_init_params ip = {};
+    ip.mem_size   = mem;
+    ip.mem_buffer = nullptr;
+    ip.no_alloc   = false;
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) { err = "ggml_init failed (cached decoder)"; return false; }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    ggml_tensor * inp_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Tn);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Tn);
+    ggml_set_name(inp_ids, "dec_ids");
+    ggml_set_name(inp_pos, "dec_pos");
+    std::memcpy(inp_ids->data, new_ids.data(), Tn * sizeof(int32_t));
+
+    // NLLB_POS_ABSOLUTE, and only that. HF's cached rule is
+    // (cumsum(mask) + n_past) * mask + pad_id with the cumsum restarting each
+    // step, which for a token at absolute index j collapses to j + 1 + pad_id -
+    // or pad_id if the token IS pad. The un-cached CUMSUM rule cannot be
+    // evaluated from n_past alone (it depends on how many pads the prefix
+    // contained), and reproducing it here would mean matching HF's *other*
+    // path, so it is not offered. See nllb_pos_mode in nllb.h.
+    {
+        int32_t * p = (int32_t *) inp_pos->data;
+        for (int i = 0; i < Tn; ++i) {
+            const int32_t j = n_past + i;
+            p[i] = (new_ids[i] == hp.pad_id) ? hp.pad_id : j + 1 + hp.pad_id;
+        }
+    }
+
+    ggml_tensor * cur = ggml_get_rows(ctx, model.tok_embd, inp_ids);
+    cur = ggml_scale(ctx, cur, hp.embd_scale);
+    cur = ggml_add(ctx, cur, ggml_get_rows(ctx, model.pos_embd, inp_pos));
+
+    std::vector<ggml_tensor *> hs;
+    hs.reserve(L + 1);
+
+    const float attn_scale = 1.0f / std::sqrt((float) HD);
+
+    for (int il = 0; il < L; ++il) {
+        const nllb_dec_layer & l = model.dec[il];
+        hs.push_back(cur);
+
+        // ---- causal self-attention over cache + new tokens ----
+        ggml_tensor * residual = cur;
+        ggml_tensor * h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.attn_norm_w), l.attn_norm_b);
+
+        ggml_tensor * Q = ggml_add(ctx, ggml_mul_mat(ctx, l.wq, h), l.bq);
+        Q = ggml_scale(ctx, Q, attn_scale);
+        ggml_tensor * K = ggml_add(ctx, ggml_mul_mat(ctx, l.wk, h), l.bk);
+        ggml_tensor * V = ggml_add(ctx, ggml_mul_mat(ctx, l.wv, h), l.bv);
+
+        Q = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, Q, HD, H, Tn), 0, 2, 1, 3));   // (HD, Tn, H)
+
+        ggml_tensor * kc = cache.k_self[il];
+        ggml_tensor * vc = cache.v_self[il];
+
+        // Write the new rows in the layout the read expects. ggml_cpy handles
+        // the strided destination, which is what buys the read below being a
+        // view rather than a copy of the whole history.
+        ggml_tensor * Kp = ggml_permute(ctx,
+                ggml_reshape_3d(ctx, K, HD, H, Tn), 0, 2, 1, 3);    // (HD, Tn, H)
+        ggml_tensor * Vp = ggml_permute(ctx,
+                ggml_reshape_3d(ctx, V, HD, H, Tn), 1, 2, 0, 3);    // (Tn, HD, H)
+
+        ggml_tensor * k_dst = ggml_view_3d(ctx, kc, HD, Tn, H,
+                kc->nb[1], kc->nb[2], (size_t) n_past * kc->nb[1]);
+        ggml_tensor * v_dst = ggml_view_3d(ctx, vc, Tn, HD, H,
+                vc->nb[1], vc->nb[2], (size_t) n_past * vc->nb[0]);
+
+        // ORDER MATTERS, and not in the way it first looks. These copies have
+        // no data dependency on the reads below, so only graph order makes the
+        // write happen first: ggml_graph_compute walks gf->nodes in insertion
+        // order, and ggml_build_forward_expand appends depth-first.
+        //
+        // What actually protects this graph is that NOTHING downstream is
+        // expanded during the layer loop - `cur` and the logits enter the graph
+        // once, at the end - so the copies are the only nodes inserted here and
+        // land ahead of every read. Measured, not assumed: moving these two
+        // calls to the bottom of the block changes nothing (the reads are still
+        // expanded later), while expanding the actual kq node before them
+        // breaks 9 of 9 cases at layer 1. See claude/step5-cpp-kv-cache.md.
+        //
+        // The rule to keep, therefore: do not expand anything that reads the
+        // cache before these two lines. A per-layer debug hook is exactly the
+        // innocent-looking change that would.
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kp, k_dst));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));
+
+        ggml_tensor * Kv = ggml_view_3d(ctx, kc, HD, n_kv, H,
+                kc->nb[1], kc->nb[2], 0);                           // (HD, n_kv, H)
+        ggml_tensor * Vv = ggml_view_3d(ctx, vc, n_kv, HD, H,
+                vc->nb[1], vc->nb[2], 0);                           // (n_kv, HD, H)
+
+        ggml_tensor * kq = ggml_mul_mat(ctx, Kv, Q);                // (n_kv, Tn, H)
+        // n_past stops being 0 here. Query row j is absolute position
+        // n_past + j and may see keys 0..n_past + j; ggml_diag_mask_inf masks
+        // exactly i > n_past + j.
+        //
+        // At Tn == 1 the correct offset masks nothing, and the error this hides
+        // is one-sided: an offset that is too LARGE still masks nothing and is
+        // invisible to single-token generation (n_past + 1 passes every case of
+        // the step comparison and fails the multi-token ones), while an offset
+        // that is too small masks a real key and is caught immediately. That
+        // asymmetry is why tests/test_cache.cpp feeds the same prefix in chunks
+        // of more than one token as well as one at a time - single-token
+        // stepping alone cannot test this line.
+        kq = ggml_diag_mask_inf(ctx, kq, n_past);
+        kq = ggml_soft_max_ext(ctx, kq, nullptr, 1.0f, 0.0f);
+        ggml_tensor * kqv = ggml_mul_mat(ctx, Vv, kq);              // (HD, Tn, H)
+
+        kqv = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));   // (HD, H, Tn)
+        cur = ggml_reshape_2d(ctx, kqv, D, Tn);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.wo, cur), l.bo);
+        cur = ggml_add(ctx, cur, residual);
+
+        // ---- cross-attention: K and V come straight out of the cache ----
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.cross_norm_w), l.cross_norm_b);
+
+        ggml_tensor * cQ = ggml_add(ctx, ggml_mul_mat(ctx, l.cwq, h), l.cbq);
+        cQ = ggml_scale(ctx, cQ, attn_scale);
+        cQ = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_3d(ctx, cQ, HD, H, Tn), 0, 2, 1, 3));  // (HD, Tn, H)
+
+        ggml_tensor * ckq = ggml_mul_mat(ctx, cache.k_cross[il], cQ);  // (Ts, Tn, H)
+        // Still unmasked: every target position may see the whole source.
+        ckq = ggml_soft_max_ext(ctx, ckq, nullptr, 1.0f, 0.0f);
+        ggml_tensor * ckqv = ggml_mul_mat(ctx, cache.v_cross[il], ckq); // (HD, Tn, H)
+
+        ckqv = ggml_cont(ctx, ggml_permute(ctx, ckqv, 0, 2, 1, 3)); // (HD, H, Tn)
+        cur = ggml_reshape_2d(ctx, ckqv, D, Tn);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.cwo, cur), l.cbo);
+        cur = ggml_add(ctx, cur, residual);
+
+        // ---- feed forward ----
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.ffn_norm_w), l.ffn_norm_b);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_up, h), l.b_up);
+        h = ggml_relu(ctx, h);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_down, h), l.b_down);
+        cur = ggml_add(ctx, h, residual);
+    }
+
+    cur = ggml_norm(ctx, cur, hp.eps);
+    cur = ggml_add(ctx, ggml_mul(ctx, cur, model.dec_out_norm_w), model.dec_out_norm_b);
+    ggml_set_name(cur, "dec_out");
+    hs.push_back(cur);
+
+    ggml_tensor * logits = nullptr;
+    if (want_logits) {
+        ggml_tensor * lm_in = cur;
+        if (logits_mode == NLLB_LOGITS_LAST && Tn > 1) {
+            lm_in = ggml_cont(ctx, ggml_view_2d(ctx, cur, D, 1, cur->nb[1],
+                                                (size_t)(Tn - 1) * cur->nb[1]));
+        }
+        logits = ggml_mul_mat(ctx, model.lm_head(), lm_in);
+        ggml_set_name(logits, "logits");
+        ggml_build_forward_expand(gf, logits);
+    }
+
+    ggml_build_forward_expand(gf, cur);
+    if (want_hidden_states) {
+        for (ggml_tensor * t : hs) ggml_build_forward_expand(gf, t);
+    }
+
+    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
+    if (st != GGML_STATUS_SUCCESS) {
+        err = "ggml_graph_compute failed (cached decoder), status " + std::to_string((int) st);
+        ggml_free(ctx);
+        return false;
+    }
+
+    out.n_tokens = Tn;
+    out.d_model  = D;
+    out.n_vocab  = (int32_t) model.lm_head()->ne[1];
+    out.output.resize((size_t) Tn * D);
+    std::memcpy(out.output.data(), cur->data, out.output.size() * sizeof(float));
+
+    out.logits.clear();
+    out.n_logit_rows = 0;
+    if (want_logits) {
+        out.n_logit_rows = logit_rows;
+        out.logits.resize((size_t) logit_rows * out.n_vocab);
+        std::memcpy(out.logits.data(), logits->data, out.logits.size() * sizeof(float));
+    }
+
+    out.hidden_states.clear();
+    if (want_hidden_states) {
+        out.hidden_states.resize(hs.size());
+        for (size_t i = 0; i < hs.size(); ++i) {
+            out.hidden_states[i].resize((size_t) Tn * D);
+            std::memcpy(out.hidden_states[i].data(), hs[i]->data,
+                        out.hidden_states[i].size() * sizeof(float));
+        }
+    }
+
+    ggml_free(ctx);
+
+    // Only now, after the graph really ran: a caller that retries after a
+    // failure must not find the cache half-advanced.
+    cache.n_past = n_kv;
+    return true;
+}
+
+// --------------------------------------------------------------------------
 // greedy generation
 //
 // One encoder pass, then one decoder pass per emitted token over the whole
@@ -669,12 +1060,24 @@ bool nllb_generate(const nllb_model & model,
     out = nllb_generate_result();
     out.n_src = (int32_t) src_ids.size();
     out.stop  = NLLB_STOP_MAX_NEW;
+    out.used_cache = params.use_cache;
 
     nllb_encode_result enc;
     if (!nllb_encode(model, src_ids, n_threads, false, enc, err)) return false;
 
     out.ids.reserve((size_t) params.max_new_tokens + 1);
     out.ids.push_back(start);
+
+    // The cached path needs its capacity up front: decoder_start plus every
+    // token that could be emitted. Clamped to the model's n_ctx, so running out
+    // of cache and running out of context are the same event with the same
+    // stop reason rather than two different-looking failures.
+    nllb_kv_cache cache;
+    if (params.use_cache) {
+        int cap = params.max_new_tokens + 1;
+        if (hp.n_ctx > 0 && cap > hp.n_ctx) cap = hp.n_ctx;
+        if (!nllb_kv_cache_init(model, enc, cap, n_threads, cache, err)) return false;
+    }
 
     for (int step = 0; step < params.max_new_tokens; ++step) {
         // nllb_decode accepts Td == n_ctx, so the prefix may still be decoded
@@ -685,13 +1088,33 @@ bool nllb_generate(const nllb_model & model,
         }
 
         nllb_decode_result dec;
-        // NLLB_POS_ABSOLUTE, not the teacher-forced default: the goldens come
-        // from generate(), which decodes incrementally. The two rules differ
-        // only if the model emits pad_id, and then this is the one HF used.
-        if (!nllb_decode(model, enc, out.ids, src_ids, n_threads,
-                         /*want_hidden_states=*/false, NLLB_LOGITS_LAST,
-                         dec, err, NLLB_POS_ABSOLUTE)) {
-            return false;
+        if (params.use_cache) {
+            // Step 0 feeds [decoder_start]; every later step feeds only the
+            // token just emitted, with the rest of the prefix already in the
+            // cache. cache.n_past is therefore the absolute index of that
+            // token, which is exactly what the position rule needs.
+            const std::vector<int32_t> feed(1, out.ids.back());
+            if ((int) cache.n_past != (int) out.ids.size() - 1) {
+                err = "kv cache out of step with the generated prefix: n_past=" +
+                      std::to_string(cache.n_past) + ", expected " +
+                      std::to_string((int) out.ids.size() - 1);
+                return false;
+            }
+            if (!nllb_decode_cached(model, cache, feed, n_threads,
+                                    /*want_hidden_states=*/false,
+                                    NLLB_LOGITS_LAST, dec, err)) {
+                return false;
+            }
+        } else {
+            // NLLB_POS_ABSOLUTE, not the teacher-forced default: the goldens
+            // come from generate(), which decodes incrementally. The two rules
+            // differ only if the model emits pad_id, and then this is the one
+            // HF used - and the one the cached branch above has no choice about.
+            if (!nllb_decode(model, enc, out.ids, src_ids, n_threads,
+                             /*want_hidden_states=*/false, NLLB_LOGITS_LAST,
+                             dec, err, NLLB_POS_ABSOLUTE)) {
+                return false;
+            }
         }
         if (dec.n_logit_rows != 1 || (int) dec.logits.size() != dec.n_vocab) {
             err = "decoder returned unexpected logits shape";
