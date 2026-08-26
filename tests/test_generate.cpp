@@ -78,8 +78,12 @@ int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
             "usage: %s <model.gguf> <ref-dir> [-t threads] [--forced-bos ID]\n"
-            "       [--max-new N] [--tie-floor F] [--check-modes] [-v]\n"
+            "       [--max-new N] [--tie-floor F] [--check-modes] [--use-cache] [-v]\n"
             "  --forced-bos/--max-new override manifest_gen.txt for every case\n"
+            "  --use-cache: run the SAME comparison through the KV-cached path.\n"
+            "               nllb-test-cache already proves cached == un-cached; this\n"
+            "               closes the loop against HF directly instead of by\n"
+            "               composition, and costs one flag.\n"
             "  --tie-floor: below this logit margin a divergence is reported as a\n"
             "               near-tie rather than a disagreement (default 1e-3)\n"
             "  --check-modes: also prove NLLB_LOGITS_LAST matches the last row of\n"
@@ -98,6 +102,7 @@ int main(int argc, char ** argv) {
     float tie_floor    = 1e-3f;
     bool  verbose      = false;
     bool  check_modes  = false;
+    bool  use_cache    = false;
     for (int i = 3; i < argc; ++i) {
         if      (!std::strcmp(argv[i], "-t")           && i + 1 < argc) n_threads  = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--forced-bos") && i + 1 < argc) forced_bos = std::atoi(argv[++i]);
@@ -105,6 +110,7 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(argv[i], "--tie-floor")  && i + 1 < argc) tie_floor  = (float) std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "-v"))                           verbose    = true;
         else if (!std::strcmp(argv[i], "--check-modes"))                check_modes = true;
+        else if (!std::strcmp(argv[i], "--use-cache"))                  use_cache   = true;
     }
 
     nllb_model model;
@@ -120,10 +126,13 @@ int main(int argc, char ** argv) {
     }
     std::printf("model: d_model=%d dec_layers=%d dec_heads=%d vocab=%d "
                 "dec_start=%d eos=%d lm_head=%s\n"
-                "greedy: exact id comparison, no tolerance. tie floor %.1e\n\n",
+                "greedy: exact id comparison, no tolerance. tie floor %.1e\n"
+                "path:   %s\n\n",
                 model.hp.d_model, model.hp.n_dec_layer, model.hp.n_dec_head,
                 model.hp.n_vocab, model.hp.dec_start_id, model.hp.eos_id,
-                model.output_w ? "untied" : "tied", tie_floor);
+                model.output_w ? "untied" : "tied", tie_floor,
+                use_cache ? "KV-CACHED (nllb_generate use_cache=true)"
+                          : "un-cached (re-decodes the whole prefix each step)");
 
     std::ifstream mf(ref_dir + "manifest_gen.txt");
     if (!mf) {
@@ -183,6 +192,7 @@ int main(int argc, char ** argv) {
         gp.max_new_tokens = max_new > 0 ? max_new : m_max_new;
         gp.forced_bos_id  = forced_bos != -2 ? forced_bos : m_bos;
         gp.dec_start_id   = m_start;
+        gp.use_cache      = use_cache;
 
         nllb_generate_result got;
         if (!nllb_generate(model, src_ids, gp, n_threads, got, err)) {

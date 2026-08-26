@@ -112,9 +112,22 @@ jobs:
         run: ./build/bin/nllb-test-decoder models/nllb-600M-f32.gguf ref/ -t 4
 
       - name: Generate gate
-        # Slowest step by far: no KV cache, so every one of the 24 steps
-        # re-decodes the whole prefix.
+        # Slowest step by far: the un-cached path re-decodes the whole prefix on
+        # every one of the 24 steps. Kept un-cached on purpose - this is the run
+        # that establishes HF parity, and it must keep testing the path that
+        # claim was originally made about.
         run: ./build/bin/nllb-test-generate models/nllb-600M-f32.gguf ref/ -t 4 --check-modes
+
+      - name: Generate gate, through the KV cache
+        run: ./build/bin/nllb-test-generate models/nllb-600M-f32.gguf ref/ -t 4 --use-cache
+
+      - name: KV cache gate
+        # The one number here that the synthetic runs cannot produce: the real
+        # 600M has ~4200-magnitude residuals, so this is where the cached and
+        # un-cached states are compared at a scale where float32 rounding is
+        # actually visible. The [grow] control on the same line says how much of
+        # any difference is the sequence length rather than the cache.
+        run: ./build/bin/nllb-test-cache models/nllb-600M-f32.gguf ref/ -t 4 -v
 
       - name: Upload the German output
         # ref/*.dec.json carries greedy_text next to the ids, so a green run is

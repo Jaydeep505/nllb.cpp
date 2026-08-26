@@ -27,3 +27,7 @@ set_target_properties(nllb-test-decoder PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${C
 add_executable(nllb-test-generate tests/test_generate.cpp)
 target_link_libraries(nllb-test-generate PRIVATE nllb)
 set_target_properties(nllb-test-generate PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(nllb-test-cache tests/test_cache.cpp)
+target_link_libraries(nllb-test-cache PRIVATE nllb)
+set_target_properties(nllb-test-cache PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
