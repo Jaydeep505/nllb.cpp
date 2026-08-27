@@ -4,6 +4,7 @@
 #include "ggml-cpu.h"
 #include "gguf.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -26,6 +27,15 @@ bool kv_f32(const gguf_context * g, const char * key, float & dst) {
     if (id < 0) return false;
     dst = gguf_get_val_f32(g, id);
     return true;
+}
+
+// Wall clock in milliseconds, for nllb_step_timing. steady_clock rather than
+// system_clock: the numbers are differences, and a clock that can be stepped
+// backwards by NTP has no business measuring a 40 ms decoder step.
+using clk = std::chrono::steady_clock;
+
+double ms_between(const clk::time_point & a, const clk::time_point & b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
 }
 
 ggml_tensor * need(ggml_context * ctx, const std::string & name, std::string & err) {
@@ -738,7 +748,11 @@ bool nllb_decode_cached(const nllb_model & model,
                         bool want_hidden_states,
                         int logits_mode,
                         nllb_decode_result & out,
-                        std::string & err) {
+                        std::string & err,
+                        nllb_step_timing * timing) {
+    const clk::time_point t_enter = clk::now();
+    if (timing) *timing = nllb_step_timing();
+
     const nllb_hparams & hp = model.hp;
     const int Tn = (int) new_ids.size();
     const int D  = hp.d_model;
@@ -778,12 +792,46 @@ bool nllb_decode_cached(const nllb_model & model,
     mem = mem * 2 + 64u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 8192
         + ggml_graph_overhead();
 
+    const clk::time_point t_alloc0 = clk::now();
     ggml_init_params ip = {};
     ip.mem_size   = mem;
     ip.mem_buffer = nullptr;
     ip.no_alloc   = false;
+    // Reuse the arena across steps when the cache is carrying one, so the pages
+    // are faulted in once rather than once per token. `mem_size` is the
+    // buffer's real size rather than this step's estimate; ggml bump-allocates
+    // within it either way. ggml_free will not free a buffer it did not
+    // allocate (ggml.c: mem_buffer_owned = params.mem_buffer ? false : true),
+    // so this allocation survives the loop and dies with the cache.
+    //
+    // `new char[]` and not vector/assign/memset: default-initialised, so the
+    // pages stay untouched and the first step faults in only the ~4 MB it
+    // actually uses. Pre-zeroing all 80 MB is a 360 ms bill against a 4 ms/step
+    // saving - see nllb_kv_cache::scratch in nllb.h.
+    //
+    // THE HEADROOM IS NOT DECORATION. `mem` is not constant across steps: the
+    // per-layer term carries 12 * Tn * n_kv * H and n_kv grows by one every
+    // step, so a buffer grown to exactly `mem` is short again on the very next
+    // one. With a zeroing allocator that mistake cost 50 ms/step and 20694
+    // minor faults/step - worse than not reusing at all, and it looked like
+    // reuse being a bad idea rather than like this line being wrong. Growing by
+    // a quarter turns thousands of steps into one allocation.
+    if (cache.reuse_scratch) {
+        if (cache.scratch_size < mem) {
+            cache.scratch_size = mem + mem / 4;
+            cache.scratch.reset(new char[cache.scratch_size]);
+        }
+        ip.mem_size   = cache.scratch_size;
+        ip.mem_buffer = cache.scratch.get();
+    }
     ggml_context * ctx = ggml_init(ip);
     if (!ctx) { err = "ggml_init failed (cached decoder)"; return false; }
+    const clk::time_point t_alloc1 = clk::now();
+    if (timing) {
+        timing->alloc = ms_between(t_alloc0, t_alloc1);
+        timing->arena = ip.mem_size;
+        timing->scratch_reused = cache.reuse_scratch;
+    }
 
     ggml_cgraph * gf = ggml_new_graph(ctx);
 
@@ -948,12 +996,20 @@ bool nllb_decode_cached(const nllb_model & model,
         for (ggml_tensor * t : hs) ggml_build_forward_expand(gf, t);
     }
 
+    const clk::time_point t_build1 = clk::now();
+    if (timing) {
+        timing->build   = ms_between(t_alloc1, t_build1);
+        timing->n_nodes = ggml_graph_n_nodes(gf);
+    }
+
     const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
     if (st != GGML_STATUS_SUCCESS) {
         err = "ggml_graph_compute failed (cached decoder), status " + std::to_string((int) st);
         ggml_free(ctx);
         return false;
     }
+    const clk::time_point t_compute1 = clk::now();
+    if (timing) timing->compute = ms_between(t_build1, t_compute1);
 
     out.n_tokens = Tn;
     out.d_model  = D;
@@ -979,7 +1035,15 @@ bool nllb_decode_cached(const nllb_model & model,
         }
     }
 
+    const clk::time_point t_read1 = clk::now();
+    if (timing) timing->readback = ms_between(t_compute1, t_read1);
+
     ggml_free(ctx);
+
+    if (timing) {
+        timing->release = ms_between(t_read1, clk::now());
+        timing->total   = ms_between(t_enter, clk::now());
+    }
 
     // Only now, after the graph really ran: a caller that retries after a
     // failure must not find the cache half-advanced.

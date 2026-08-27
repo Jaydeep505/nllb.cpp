@@ -85,6 +85,12 @@ costs memory and is the right trade while debugging. Once the encoder is green,
 switching to `ggml_gallocr` with only `enc_out` marked as an output cuts the
 working set substantially - do that as a separate, verifiable change.
 
+For the DECODER that change was measured and dropped: step 6 found the whole of
+what a graph allocator targets to be 1.6-1.7 ms of a ~38 ms cached token, most
+of which is recovered by simply keeping the arena across steps
+(`nllb_kv_cache::scratch`). The encoder runs once per sentence, so the working
+set is the argument there, not the time. See `PROFILE.md`.
+
 Attention is unmasked: every golden case is a single unpadded sequence.
 `inp_pos` is already computed the general way (`cumsum(mask)*mask + pad_id`),
 so padded batches need only a mask tensor passed to `ggml_soft_max_ext`.

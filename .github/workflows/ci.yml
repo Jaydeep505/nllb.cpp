@@ -107,11 +107,26 @@ jobs:
         # sources. --chunk feeds the prefix several tokens at a time, which is
         # the only thing that exercises the causal mask's n_past offset - at one
         # token per call an offset that is too large masks nothing and passes.
+        #
+        # It also runs the [arena] pass: the same stepping pass twice, once with
+        # nllb_kv_cache::scratch reused across steps and once allocating fresh,
+        # held to BIT-IDENTITY. A fresh mmap reads as zero, so an op that reads
+        # graph memory it never wrote is silently 0.0 with a fresh arena and is
+        # last step's values with a reused one. Nothing else here can see that:
+        # `full` is one call per cache so its arena is always fresh, and `step`
+        # and `chunk` are held to a tolerance a small stale read hides under.
         run: |
           ./build/bin/nllb-test-cache models/tiny-f32.gguf ref-tiny/ -t 4
           ./build/bin/nllb-test-cache models/tiny-f32.gguf ref-eos/  -t 4
           ./build/bin/nllb-test-cache models/deep-f32.gguf ref-deep/ -t 4
           ./build/bin/nllb-test-cache models/deep-f32.gguf ref-pad/  -t 4
+
+      - name: Profiler smoke test - nllb-bench must still run
+        # Not a gate on any number: the sandbox and the runner are too noisy for
+        # a time to assert on, and the numbers that matter were taken at the
+        # real 600M's shape (see PROFILE.md). This only keeps the tool from
+        # rotting, which is what happens to a benchmark nothing runs.
+        run: ./build/bin/nllb-bench models/deep-f32.gguf -t 4 --src 8 --steps 4
 
       - name: Generate gate, through the cache
         # Closes the loop against HF directly rather than by composition. If
