@@ -122,23 +122,47 @@ reports 0.9x — cached *slower* — and `00_hello_world` measured 4.6x in one r
 and 2.1x in the next, same binary, same work. At those lengths the encoder pass,
 the one-time cross-attention cache build and scheduler jitter dominate.
 
-### Where the remaining time goes — a hypothesis, not a measurement
+### Where the remaining time goes — MEASURED IN STEP 6, and this section was wrong
 
-Fitting `total ≈ n·L + d·n²/2` to the two trustworthy un-cached cases (39 and 65
-tokens) gives a fixed per-step cost `L ≈ 12 ms` and a per-token decode cost
-`d ≈ 5 ms`. That 12 ms is about what streaming the weights should cost: the
-`lm_head` alone is 256206 × 1024 × 4 = **1.05 GB read per step**, plus ~0.6 GB of
-decoder weights.
+The paragraph that stood here fitted `total ≈ n·L + d·n²/2` to the two
+trustworthy un-cached cases and got a fixed per-step cost of ~12 ms against an
+observed 38, then attributed the ~22 ms gap to `nllb_decode_cached` allocating a
+fresh ~72 MB ggml context every step — "a 72 MB malloc plus several thousand
+page faults per token" — and concluded that `ggml_gallocr` plus a reused graph
+would roughly halve the cached time. It said, correctly, that this was
+arithmetic from weight sizes and not a profile.
 
-So the cached path should be running near 16 ms/token and it runs at 38. The
-~22 ms gap is most likely `nllb_decode_cached` allocating a fresh ggml context
-every step — the sizing works out to roughly 72 MB, so that is a 72 MB malloc
-plus several thousand page faults per token, freed and repeated.
+It was not a profile, and it was wrong. `claude/step6-cpp-graph-alloc.md`
+(repo copy: `PROFILE.md`) has the clock:
 
-If that is right, `ggml_gallocr` plus a reused graph would roughly halve the
-cached time again, and it is a far bigger win than anything left in the cache.
-**It is arithmetic from weight sizes, not a profile.** Put a timer around
-`ggml_init` before acting on it.
+| phase | ms/step | share |
+|---|---|---|
+| `ggml_init` (the arena) | **0.02** | 0.0% |
+| graph build | 1.08 | 1.2% |
+| **`ggml_graph_compute`** | **88.60** | **98.0%** |
+| readback | 0.23 | 0.3% |
+| `ggml_free` | 0.29 | 0.3% |
+
+**The lm_head is 58–65% of the cached step** — running the same step with
+`NLLB_LOGITS_NONE` prices it directly — and the twelve decoder blocks are the
+other ~37%. Everything an allocator could touch is 1.6–1.7 ms/step combined, and
+it is thread-independent (verified at 1 and 2 threads: only `compute` moves), so
+on the 8-thread machine those 38 ms/token contain ~1.7 ms of it. It could not
+have been 22 ms on any machine.
+
+Two things the arithmetic could not have known. `ggml_init` with
+`mem_buffer = nullptr` does not *touch* the memory it returns, so the cost of a
+cold arena hides inside `ggml_graph_compute` rather than showing up under
+`ggml_init` — a timer there alone reads 0.02 ms and is equally misleading. And
+the fault count is 1040 per step, not thousands, because the arena is *sized* at
+81 MiB but a step *touches* about 4 MiB of it.
+
+What shipped instead is 15 lines: `nllb_kv_cache::scratch` keeps the graph arena
+across steps, worth 2–4% and 95% of the page faults, held to bit-identity by the
+new `[arena]` pass. After it, `ggml_gallocr`'s remaining target is ~0.3 ms/step
+and it is not worth the trap-15 risk of a graph that lives across steps. **The
+next real optimisation is f16 or a quantised lm_head**, because that is where
+60% of the step is.
 
 ## What is cached, and what that buys
 
@@ -369,5 +393,8 @@ If a future run goes red, in order of likelihood:
   sizes it to `max_new_tokens + 1`, so this does not bite yet.
 - **Padded batches.** Unchanged from step 4 — source ids containing `pad_id` are
   still rejected up front, and cross-attention is still unmasked.
-- f16, quantised K/V, Metal, `ggml_gallocr` — and see the per-step allocation
-  hypothesis above, which says `ggml_gallocr` is now the biggest remaining win.
+- f16, quantised K/V, Metal. **Not `ggml_gallocr`** — step 6 measured what it
+  targets at 1.6–1.7 ms/step, of which the reused arena already takes 1.1, and
+  dropped it. See the corrected section above and `PROFILE.md`.
+- **The scratch arena under beam search.** It is ~101 MiB and hangs off the
+  cache, so one cache per beam is one arena per beam. Beams could share one.

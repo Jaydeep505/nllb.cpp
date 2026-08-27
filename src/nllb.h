@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -223,6 +224,38 @@ struct nllb_kv_cache {
     std::vector<ggml_tensor *> k_cross;   // per layer, [HD, n_src, H]
     std::vector<ggml_tensor *> v_cross;   // per layer, [n_src, HD, H]  (transposed)
 
+    // Per-step graph arena, kept across steps. NOT cache state - it holds no
+    // K or V and nllb_kv_cache_reset does not touch it - but the cache is the
+    // object that already lives exactly as long as the decode loop, which is
+    // the lifetime this buffer wants.
+    //
+    // Why it is here at all: ggml_init(mem_buffer = nullptr) mallocs ~80 MB per
+    // step, glibc serves that size with a fresh mmap, and the kernel must
+    // zero-fill each page on first touch. That cost does not show up under
+    // ggml_init - it shows up inside ggml_graph_compute, mixed in with the
+    // arithmetic and indistinguishable from it. Keeping one mapping means the
+    // pages are faulted in once instead of once per token.
+    //
+    // IT IS DELIBERATELY NOT PRE-ZEROED, and that is the whole difference
+    // between this being a win and a loss. The arena is sized for the worst
+    // case but a step touches only ~4 MB of it, so pre-touching all 80 MB pays
+    // for 20x the pages the work needs: measured, that costs ~360 ms up front
+    // against a ~4 ms/step saving, which does not break even until ~90 tokens -
+    // longer than most translations. Handing over an UNTOUCHED buffer lets the
+    // first step fault in exactly the pages it uses and every later step find
+    // them warm, which is the same win with no up-front bill.
+    //
+    // ONE CONSEQUENCE WORTH KNOWING. A fresh mmap reads as zero, so an op that
+    // read graph memory it had not written would silently see zeros today, and
+    // see the PREVIOUS STEP's values once the arena is reused. That is a real
+    // change in what a latent bug would do. The gate that catches it is the
+    // `full = exact` assertion in tests/test_cache.cpp: one cached call over
+    // the whole prefix, held to bit-identity against the un-cached pass, which
+    // no stale read survives.
+    std::unique_ptr<char[]> scratch;
+    size_t scratch_size = 0;
+    bool   reuse_scratch = true;
+
     nllb_kv_cache() = default;
     ~nllb_kv_cache();
     // Owns a ggml_context; copying it would double-free. Moving is not needed.
@@ -247,6 +280,31 @@ bool nllb_kv_cache_init(const nllb_model & model,
 // Valid only for the same source sentence; use a fresh init for a new one.
 void nllb_kv_cache_reset(nllb_kv_cache & cache);
 
+// Per-call phase breakdown, in milliseconds. Optional: pass nullptr and nothing
+// is measured. It exists because step 5 closed with an *inference* about where
+// the cached step's 38 ms/token goes - "most likely the per-step ggml_init" -
+// derived from weight sizes rather than from a clock, and acting on arithmetic
+// like that is how an optimisation gets aimed at the wrong line.
+//
+// Read `alloc` and `compute` together. With mem_buffer = nullptr, ggml_init is
+// a malloc that does not touch the pages it returns, so the fault cost of a
+// fresh 72 MB arena is NOT in `alloc` - it lands inside `compute`, mixed in
+// with the arithmetic and indistinguishable from it. `scratch_reused` says
+// which of the two the numbers describe: false means those faults are still
+// hiding in `compute`, true means the arena was warm and `compute` is closer to
+// arithmetic alone. The difference between two runs is the page-fault bill.
+struct nllb_step_timing {
+    double alloc    = 0.0;   // ggml_init: the arena itself
+    double build    = 0.0;   // graph construction, no arithmetic
+    double compute  = 0.0;   // ggml_graph_compute_with_ctx
+    double readback = 0.0;   // memcpy of outputs, logits and hidden states
+    double release  = 0.0;   // ggml_free
+    double total    = 0.0;
+    size_t arena    = 0;     // bytes ggml_init was asked for
+    int    n_nodes  = 0;     // graph size, for the per-node cost of building
+    bool   scratch_reused = false;
+};
+
 // One incremental step. `new_ids` are the tokens NOT yet in the cache - one per
 // step during generation, or the whole starting prefix on the first call.
 // Positions are NLLB_POS_ABSOLUTE, derived from cache.n_past; the causal mask
@@ -267,7 +325,8 @@ bool nllb_decode_cached(const nllb_model & model,
                         bool want_hidden_states,
                         int logits_mode,            // nllb_logits_mode
                         nllb_decode_result & out,
-                        std::string & err);
+                        std::string & err,
+                        nllb_step_timing * timing = nullptr);
 
 // --------------------------------------------------------------------------
 // greedy generation

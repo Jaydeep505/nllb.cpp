@@ -12,22 +12,44 @@ set(GGML_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(vendor/ggml)
 
+# Warnings on OUR targets only - vendor/ggml is added above and keeps its own
+# flags. This is not housekeeping: the [arena] report in tests/test_cache.cpp
+# shipped with a printf missing its first argument, which is a segfault on the
+# failure path and invisible on the passing one. -Wformat (via -Wall) catches
+# exactly that, and a gate that crashes instead of reporting is worse than no
+# gate.
+if(MSVC)
+    set(NLLB_WARN /W4)
+else()
+    set(NLLB_WARN -Wall -Wextra -Wno-unused-parameter)
+endif()
+
 add_library(nllb STATIC src/nllb.cpp)
+target_compile_options(nllb PRIVATE ${NLLB_WARN})
 target_include_directories(nllb PUBLIC src)
 target_link_libraries(nllb PUBLIC ggml)
 
 add_executable(nllb-test tests/test_encoder.cpp)
 target_link_libraries(nllb-test PRIVATE nllb)
+target_compile_options(nllb-test PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_executable(nllb-test-decoder tests/test_decoder.cpp)
 target_link_libraries(nllb-test-decoder PRIVATE nllb)
+target_compile_options(nllb-test-decoder PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-decoder PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_executable(nllb-test-generate tests/test_generate.cpp)
 target_link_libraries(nllb-test-generate PRIVATE nllb)
+target_compile_options(nllb-test-generate PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-generate PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_executable(nllb-test-cache tests/test_cache.cpp)
 target_link_libraries(nllb-test-cache PRIVATE nllb)
+target_compile_options(nllb-test-cache PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-cache PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(nllb-bench tests/bench_cached.cpp)
+target_link_libraries(nllb-bench PRIVATE nllb)
+target_compile_options(nllb-bench PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

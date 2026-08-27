@@ -136,13 +136,14 @@ bool run_cached(const nllb_model & model, const nllb_encode_result & enc,
                 const std::vector<int32_t> & ids, int chunk, int n_threads,
                 std::vector<std::vector<float>> & hs_out,   // [L+1][Td*D]
                 std::vector<float> & logits_last,
-                std::string & err) {
+                std::string & err, bool reuse_scratch = true) {
     const int Td = (int) ids.size();
     const int D  = model.hp.d_model;
     const int L  = model.hp.n_dec_layer;
 
     nllb_kv_cache cache;
     if (!nllb_kv_cache_init(model, enc, Td, n_threads, cache, err)) return false;
+    cache.reuse_scratch = reuse_scratch;
 
     hs_out.assign((size_t) L + 1, std::vector<float>((size_t) Td * D, 0.0f));
     logits_last.clear();
@@ -292,6 +293,7 @@ int main(int argc, char ** argv) {
     int n_cases = 0, n_fail = 0, n_skip = 0, n_lines = 0;
     double worst_state = 0.0, worst_logit = 0.0, worst_grow = 0.0;
     long   total_ndiff = 0;
+    long   arena_ndiff = 0;
     std::string worst_where;
     double t_uncached = 0.0, t_cached = 0.0;
     int    n_tok_timed = 0;
@@ -538,6 +540,66 @@ int main(int argc, char ** argv) {
             }
         }
 
+        // ---- [arena] does reusing the graph arena change the answer? ----
+        //
+        // This one does NOT compare against the un-cached path, and that is the
+        // point. nllb_kv_cache::scratch keeps one ggml arena across steps
+        // instead of mallocing a fresh one per token, so the graph now runs in
+        // memory the PREVIOUS step wrote. A fresh mmap reads as zero; a reused
+        // arena reads as whatever was there. Any op that reads graph memory it
+        // has not written therefore goes from silently seeing 0.0 to seeing
+        // last step's values - a class of bug that allocating fresh step was
+        // accidentally papering over.
+        //
+        // None of the four passes above can see that. `full` is a single call
+        // per cache, so its arena is fresh no matter what this flag says, and
+        // `step` and `chunk` are held to a tolerance that a small stale read
+        // could hide under. So: run the identical stepping pass twice, once
+        // with reuse and once without, and hold the two to BIT-IDENTITY. The
+        // arithmetic is the same graph on the same inputs; the arena is the
+        // only difference, and an allocator has no business changing a float.
+        {
+            std::vector<std::vector<float>> hs_on, hs_off;
+            std::vector<float> lg_on, lg_off;
+            const bool ok_on  = run_cached(model, enc, prefix, 1, n_threads,
+                                           hs_on, lg_on, err, /*reuse=*/true);
+            const bool ok_off = ok_on && run_cached(model, enc, prefix, 1, n_threads,
+                                                    hs_off, lg_off, err, /*reuse=*/false);
+            if (!ok_off) {
+                std::printf("  %-20s [arena] ERROR %s\n", name.c_str(), err.c_str());
+                case_ok = false;
+            } else {
+                long ndiff = 0;
+                int  bad_layer = -1;
+                for (int h = 0; h <= L; ++h) {
+                    diff_t d;
+                    accumulate(d, hs_on[(size_t) h].data(), hs_off[(size_t) h].data(),
+                               (size_t) prefix.size() * D);
+                    ndiff += d.ndiff;
+                    if (d.ndiff && bad_layer < 0) bad_layer = h;
+                }
+                diff_t dl;
+                if (lg_on.size() == lg_off.size() && !lg_on.empty()) {
+                    accumulate(dl, lg_on.data(), lg_off.data(), lg_on.size());
+                    ndiff += dl.ndiff;
+                }
+                if (ndiff != 0) {
+                    std::printf("  %-20s [arena] %ld floats differ between a REUSED "
+                                "and a FRESH graph arena, first at layer %d\n"
+                                "      -> the two runs are the same graph on the same "
+                                "inputs; only the allocation differs.\n"
+                                "         A difference means something reads graph "
+                                "memory it did not write, and was\n"
+                                "         reading the zeros a fresh mmap happens to "
+                                "hand back. Set reuse_scratch = false\n"
+                                "         to confirm, then find the read.\n",
+                                name.c_str(), ndiff, bad_layer);
+                    case_ok = false;
+                }
+                arena_ndiff += ndiff;
+            }
+        }
+
         if (pass_rel[P_STEP] > worst_state) {
             worst_state = pass_rel[P_STEP];
             worst_where = name;
@@ -595,6 +657,17 @@ int main(int argc, char ** argv) {
                         "A non-zero count here is\n"
                         "  a cache bug however small it looks. Do not ship on the "
                         "tolerance being green.\n", total_ndiff);
+        }
+        if (arena_ndiff == 0) {
+            std::printf("reusing the graph arena across steps is BIT-IDENTICAL to "
+                        "allocating a fresh one -\n"
+                        "  0 differing floats. Nothing in the graph reads memory it "
+                        "did not write, which is\n"
+                        "  what makes keeping the arena safe rather than merely "
+                        "faster.\n");
+        } else {
+            std::printf("%ld floats differ between a reused and a fresh graph arena. "
+                        "See the [arena] lines.\n", arena_ndiff);
         }
         if (t_cached > 0.0) {
             std::printf("generation wall clock over all cases: un-cached %.0f ms, "
