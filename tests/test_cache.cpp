@@ -54,6 +54,7 @@
 
 #include "nllb.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -242,6 +243,11 @@ int main(int argc, char ** argv) {
     int    max_new    = -1;
     double tol        = 5e-5;
     double logit_tol  = 1e-4;
+    // How much worse than the no-cache control an incremental pass may be
+    // before it counts as the cache's fault. 4x is loose enough to absorb the
+    // control's own run-to-run wobble and tight enough that the corruptions in
+    // "Testing the tests" all still fire - C1 and C4 land three orders above it.
+    double ctrl_factor = 4.0;
     bool   verbose    = false;
     for (int i = 3; i < argc; ++i) {
         if      (!std::strcmp(argv[i], "-t")           && i + 1 < argc) n_threads  = std::atoi(argv[++i]);
@@ -250,6 +256,7 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(argv[i], "--max-new")    && i + 1 < argc) max_new    = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--tol")        && i + 1 < argc) tol        = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--logit-tol")  && i + 1 < argc) logit_tol  = std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--ctrl-factor") && i + 1 < argc) ctrl_factor = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "-v"))                           verbose    = true;
     }
     if (chunk < 1) chunk = 1;
@@ -268,11 +275,14 @@ int main(int argc, char ** argv) {
     std::printf("model: d_model=%d dec_layers=%d dec_heads=%d vocab=%d "
                 "dec_start=%d pad=%d eos=%d lm_head=%s\n"
                 "reference: the UN-CACHED path. tolerances relative: states %.1e, "
-                "logits %.1e. chunk=%d\n\n",
+                "logits %.1e. chunk=%d\n"
+                "incremental passes are held to max(tolerance, %.1fx the no-cache "
+                "control), so this\n  gate means the same thing at any weight "
+                "precision. `full` is bit-identity, always.\n\n",
                 model.hp.d_model, model.hp.n_dec_layer, model.hp.n_dec_head,
                 model.hp.n_vocab, model.hp.dec_start_id, model.hp.pad_id,
                 model.hp.eos_id, model.output_w ? "untied" : "tied",
-                tol, logit_tol, chunk);
+                tol, logit_tol, chunk, ctrl_factor);
 
     std::ifstream mf(ref_dir + "manifest_gen.txt");
     if (!mf) {
@@ -441,13 +451,30 @@ int main(int argc, char ** argv) {
         // the length changes - which is the entire point of an incremental
         // decoder - float addition regroups, and `grow` measures exactly how
         // much of that happens with no cache in sight.
-        enum { P_FULL = 0, P_STEP, P_CHUNK, P_GROW, P_N };
+        // THE CONTROL RUNS FIRST, and that is a change with a reason.
+        //
+        // This file's own prose has always said "the cache is only responsible
+        // for whatever the first number has that the second does not" - and
+        // then the code gated `step` and `chunk` against an ABSOLUTE tolerance
+        // and used `grow` for nothing but printing. That works only while the
+        // absolute number happens to be right for the checkpoint, and it stops
+        // working the moment the weights are not f32: on an f16 model all three
+        // incremental passes fail at 2.7e-04 against a 5e-05 tolerance - the
+        // control included, at the identical number, with `full` still exact.
+        // The gate was reporting "the cache is broken" for a fact about f16.
+        //
+        // So the incremental passes are now held to the CONTROL times a factor,
+        // or the absolute tolerance, whichever is larger. That is precision-
+        // agnostic, it asserts what the prose already claimed, and it keeps the
+        // one assertion that needs no tolerance at all: `full` is bit-identical
+        // at any precision, and it still is at f16.
+        enum { P_GROW = 0, P_FULL, P_STEP, P_CHUNK, P_N };
         struct pass_t { const char * tag; int chunk; bool cached; bool exact; };
         const pass_t passes[P_N] = {
+            { "grow",  0,                   false, false },
             { "full",  (int) prefix.size(), true,  true  },
             { "step",  1,                   true,  false },
             { "chunk", chunk,               true,  false },
-            { "grow",  0,                   false, false },
         };
 
         double pass_rel[P_N]   = { 0.0, 0.0, 0.0, 0.0 };
@@ -464,6 +491,26 @@ int main(int argc, char ** argv) {
 
         for (int pi = 0; pi < P_N; ++pi) {
             const pass_t & pass = passes[pi];
+            // `grow` has already run by the time step/chunk are judged.
+            const bool incremental = (pi == P_STEP || pi == P_CHUNK);
+            // The control is MEASURED, never gated. It contains no cache, so
+            // there is nothing it could be failing at - an earlier version held
+            // it to the same absolute tolerance as everything else and duly
+            // reported the control as broken on an f16 model, which is a
+            // category error: it is the yardstick.
+            const bool gated = (pi != P_GROW);
+            const double eff_tol = incremental
+                ? std::max(tol, ctrl_factor * pass_rel[P_GROW]) : tol;
+            // NOT the control's own logit divergence. `grow`'s last iteration
+            // decodes the entire prefix, which is bit-for-bit the reference
+            // call, so its logits are equal BY CONSTRUCTION and are zero - the
+            // same reason accumulate() excludes them from the float counts. The
+            // state control is the usable yardstick, and the logits are a
+            // linear projection of the final state, so it bounds them up to the
+            // lm_head's row norms. argmax equality below is the hard assertion;
+            // this number is the soft one.
+            const double eff_logit_tol = incremental
+                ? std::max(logit_tol, ctrl_factor * pass_rel[P_GROW]) : logit_tol;
             // chunk == 1 or chunk >= T would just repeat step/full.
             if (pi == P_CHUNK &&
                 (pass.chunk <= 1 || pass.chunk >= (int) prefix.size())) continue;
@@ -488,15 +535,15 @@ int main(int argc, char ** argv) {
                 pass_ndiff[pi] += d.ndiff;
                 pass_cmp[pi]   += d.ndiff_cmp;
                 if (d.rel > pass_rel[pi]) pass_rel[pi] = d.rel;
-                const bool bad = !d.finite || d.rel > tol ||
-                                 (pass.exact && d.ndiff != 0);
+                const bool bad = gated && (!d.finite || d.rel > eff_tol ||
+                                           (pass.exact && d.ndiff != 0));
                 if (bad && bad_layer < 0) {
                     bad_layer = h;
                     std::printf("  %-20s [%s] FIRST BAD LAYER %d: rel=%.3e "
                                 "max|d|=%.3e over |ref| up to %.3e, %ld floats differ%s\n",
                                 name.c_str(), pass.tag, h, d.rel, d.max_abs, d.mag,
                                 d.ndiff, d.finite ? "" : "  (NON-FINITE)");
-                    if (pass.exact && d.finite && d.rel <= tol) {
+                    if (pass.exact && d.finite && d.rel <= eff_tol) {
                         std::printf("      -> this pass feeds the whole prefix in ONE "
                                     "cached call, so it is the same graph as the\n"
                                     "         un-cached reference with K/V routed "
@@ -521,7 +568,7 @@ int main(int argc, char ** argv) {
             if (lg.size() != ref.logits.size()) {
                 std::printf("  %-20s [%s] logits shape differs: %zu vs %zu\n",
                             name.c_str(), pass.tag, lg.size(), ref.logits.size());
-                case_ok = false;
+                if (gated) case_ok = false;
             } else if (!lg.empty()) {
                 diff_t dl;
                 accumulate(dl, lg.data(), ref.logits.data(), lg.size());
@@ -529,8 +576,8 @@ int main(int argc, char ** argv) {
                 if (dl.rel > worst_logit) worst_logit = dl.rel;
                 const int a_ref = argmax_of(ref.logits.data(), ref.logits.size());
                 const int a_got = argmax_of(lg.data(), lg.size());
-                if (!dl.finite || dl.rel > logit_tol || a_ref != a_got ||
-                    (pass.exact && dl.ndiff != 0)) {
+                if (gated && (!dl.finite || dl.rel > eff_logit_tol ||
+                              a_ref != a_got || (pass.exact && dl.ndiff != 0))) {
                     std::printf("  %-20s [%s] LOGITS: rel=%.3e argmax %d vs %d, "
                                 "%ld floats differ%s\n",
                                 name.c_str(), pass.tag, dl.rel, a_ref, a_got,

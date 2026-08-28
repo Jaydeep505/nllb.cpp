@@ -184,13 +184,27 @@ int main(int argc, char ** argv) {
                 "n_ctx=%d  (loaded in %.0f ms)\n",
                 hp.d_model, hp.n_layer, hp.n_dec_layer, hp.n_dec_head,
                 hp.n_dec_ff, n_vocab, hp.n_ctx, t_load);
-    std::printf("lm_head is %d x %d = %.2f GiB read per step; decoder weights "
-                "are %.2f GiB\n",
-                n_vocab, hp.d_model,
-                (double) n_vocab * hp.d_model * 4.0 / (1 << 30),
-                (double) hp.n_dec_layer *
-                    (8.0 * hp.d_model * hp.d_model + 2.0 * hp.d_model * hp.n_dec_ff)
-                    * 4.0 / (1 << 30));
+    // ggml_nbytes, not dims x 4. An f16 checkpoint halves these, and the whole
+    // point of the f16 change is that the step is bandwidth-bound - so a byte
+    // count that assumed f32 would report the same figure for a model running
+    // twice as fast, which is the one number here that must not be wrong.
+    {
+        const ggml_tensor * lm = model.lm_head();
+        size_t dec_bytes = 0;
+        for (const auto & l : model.dec) {
+            for (const ggml_tensor * t : { l.wq, l.wk, l.wv, l.wo,
+                                           l.cwq, l.cwk, l.cwv, l.cwo,
+                                           l.w_up, l.w_down }) {
+                if (t) dec_bytes += ggml_nbytes(t);
+            }
+        }
+        std::printf("lm_head is %d x %d %s = %.2f GiB read per step; decoder "
+                    "weights are %.2f GiB (%s)\n",
+                    n_vocab, hp.d_model, ggml_type_name(lm->type),
+                    (double) ggml_nbytes(lm) / (1 << 30),
+                    (double) dec_bytes / (1 << 30),
+                    model.dec.empty() ? "-" : ggml_type_name(model.dec[0].wq->type));
+    }
     std::printf("threads=%d src=%d steps=%d\n\n", n_threads, n_src, n_steps);
 
     // Ids only have to be in range: this measures time, not text.
