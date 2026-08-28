@@ -54,6 +54,9 @@ def main() -> int:
     ap.add_argument("--vocab", type=int, default=256206)
     ap.add_argument("--n-ctx", type=int, default=1024)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--outtype", choices=("f32", "f16"), default="f32",
+                    help="f16 mirrors tools/convert_nllb_to_gguf.py: norms, biases "
+                         "and the position table stay f32, everything else halves")
     a = ap.parse_args()
 
     D, F, V, H = a.d_model, a.ffn, a.vocab, a.heads
@@ -61,8 +64,20 @@ def main() -> int:
     a.outfile.parent.mkdir(parents=True, exist_ok=True)
     w = gguf.GGUFWriter(str(a.outfile), ARCH)
 
+    # Same rule as tools/convert_nllb_to_gguf.py's should_keep_f32: norms,
+    # biases and the position table are tiny and are exactly where precision
+    # loss compounds, so they stay f32 even in f16 mode.
+    def cast(name: str, arr: np.ndarray) -> np.ndarray:
+        keep = (name.endswith(".bias") or "_norm." in name
+                or name.startswith("position_embd"))
+        return arr if (a.outtype == "f32" or keep) else arr.astype(np.float16)
+
+    _add = w.add_tensor
+    w.add_tensor = lambda name, arr, **kw: _add(name, cast(name, arr), **kw)
+
     w.add_name("shape-only random NLLB")
-    w.add_file_type(gguf.LlamaFileType.ALL_F32)
+    w.add_file_type(gguf.LlamaFileType.ALL_F32 if a.outtype == "f32"
+                    else gguf.LlamaFileType.MOSTLY_F16)
     w.add_context_length(a.n_ctx)
     w.add_embedding_length(D)
     w.add_vocab_size(V)
@@ -130,7 +145,7 @@ def main() -> int:
     print(f"wrote {a.outfile} "
           f"({a.outfile.stat().st_size / (1 << 30):.2f} GiB) "
           f"d_model={D} enc={a.enc_layers} dec={a.dec_layers} heads={H} "
-          f"ffn={F} vocab={V}")
+          f"ffn={F} vocab={V} outtype={a.outtype}")
     return 0
 
 

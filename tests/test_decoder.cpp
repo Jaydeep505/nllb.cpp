@@ -20,6 +20,8 @@
 
 #include "nllb.h"
 
+#include "ggml.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -137,6 +139,33 @@ int main(int argc, char ** argv) {
                 model.hp.embd_scale, model.hp.dec_start_id, model.hp.pad_id,
                 model.hp.eos_id, model.output_w ? "untied" : "tied",
                 tol, logit_tol);
+
+    // A red wall on an f16 checkpoint means "this is f16", not "this is
+    // broken", and nothing in the output said so. The tolerances above are the
+    // FLOAT32 noise floor - rel ~1e-7 is arithmetic, rel ~1e-2 is a bug - and
+    // f16 sits at ~8e-04, three orders above the floor and four below a real
+    // defect. Every case will fail and the failure carries no information.
+    //
+    // Loosening the tolerance to accommodate f16 would be worse than useless:
+    // it would then pass a genuine graph error of the size this gate exists to
+    // catch. So the gate keeps its f32 tolerances, keeps failing, and says why.
+    if (model.lm_head()->type != GGML_TYPE_F32) {
+        const char * ty = ggml_type_name(model.lm_head()->type);
+        std::printf(
+            "!! this GGUF stores its weights as %s, and this gate's tolerances "
+            "are the FLOAT32\n"
+            "   noise floor. Expect every case to FAIL at roughly 1e-03, which "
+            "is what %s costs\n"
+            "   and NOT evidence of a bug - a real defect lands at 1e-02 and "
+            "flips the argmax.\n"
+            "   Do not loosen the tolerance to make this green: at 1e-03 it "
+            "would also pass a\n"
+            "   genuine graph error. Verify reduced precision with the gate "
+            "built for it, which\n"
+            "   asserts on ids rather than on distances:\n"
+            "     ./build/bin/nllb-test-precision <f32.gguf> %s <ref-dir>\n\n",
+            ty, ty, model_path.c_str());
+    }
 
     std::ifstream mf(ref_dir + "manifest_dec.txt");
     if (!mf) {

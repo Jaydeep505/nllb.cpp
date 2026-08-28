@@ -53,3 +53,8 @@ add_executable(nllb-bench tests/bench_cached.cpp)
 target_link_libraries(nllb-bench PRIVATE nllb)
 target_compile_options(nllb-bench PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(nllb-test-precision tests/test_precision.cpp)
+target_link_libraries(nllb-test-precision PRIVATE nllb)
+target_compile_options(nllb-test-precision PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-test-precision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
