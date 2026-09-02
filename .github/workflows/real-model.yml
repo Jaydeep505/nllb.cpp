@@ -105,6 +105,43 @@ jobs:
           python tools/dump_decoder_reference.py models/nllb-600M --out ref/ \
               --tgt-lang "$TGT_LANG" --per-layer --greedy --max-new-tokens "$MAX_NEW"
 
+      - name: Dump the tokenizer corpus
+        # Needs neither torch nor the weights - `transformers` and the
+        # snapshot's tokenizer.json are enough. The every-codepoint sweep is
+        # the slow part (~2 min) and is the only pass that can catch the C++
+        # matching something the reference leaves alone, so it stays.
+        run: |
+          python tools/dump_tokenizer_reference.py models/nllb-600M --out ref/ \
+              --src-lang eng_Latn --fuzz 20000
+
+      - name: Tokenizer gate
+        # ref/manifest.json comes from dump_reference.py above, so [golden]
+        # compares against the SAME ids the encoder goldens were built from -
+        # which is the property that makes this a parity claim about the whole
+        # encode path and not just about the tokenizer in isolation.
+        run: ./build/bin/nllb-test-tokenizer models/nllb-600M-f32.gguf ref/ -v
+
+      - name: The tokenizer gate must actually fire
+        # Nine golden sentences catch 2 of the 10 known-plausible tokenizer
+        # bugs. Asserting that here is what stops [corpus] and [sweep] from
+        # being quietly dropped as "redundant with the goldens".
+        run: |
+          set -e
+          python tests/corrupt_tokenizer.py build models/nllb-600M-f32.gguf ref/
+          # And the data side: a corrupted grapheme table in the FILE must turn
+          # the gate red. Without this, the baked-in tables would be 8 KB that
+          # nothing ever checks.
+          python tests/make_vocab_gguf.py --break=gcb models/nllb-600M /tmp/bad-gcb.gguf
+          if ./build/bin/nllb-test-tokenizer /tmp/bad-gcb.gguf ref/ > /dev/null 2>&1; then
+            echo "::error::the gate stayed green with the Extend ranges deleted"
+            exit 1
+          fi
+          echo "ok: --break=gcb turned the gate red"
+          # The fallback path must still WORK, not merely not crash: a GGUF with
+          # no tables at all falls back to the compiled-in header and passes.
+          python tests/make_vocab_gguf.py --break=tables models/nllb-600M /tmp/no-tables.gguf
+          ./build/bin/nllb-test-tokenizer /tmp/no-tables.gguf ref/
+
       - name: Encoder gate
         run: ./build/bin/nllb-test models/nllb-600M-f32.gguf ref/ -t 4
 

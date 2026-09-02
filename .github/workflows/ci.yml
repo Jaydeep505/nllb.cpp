@@ -199,3 +199,30 @@ jobs:
       # labour - the decoder and generate gates own "are the weights and the
       # graph right", the cache gate owns "does caching change the answer".
       # Reading a green cache gate as evidence about the model is the mistake.
+
+      - name: The committed grapheme tables must match their generator
+        # src/nllb-grapheme-data.h is generated but COMMITTED, so that building
+        # needs no Python. That is only safe if something notices when the two
+        # drift apart - a hand-edit, or a `regex` version with a newer Unicode
+        # release. This is the something.
+        run: |
+          pip install regex
+          python tools/gen_grapheme_tables.py > /tmp/grapheme.h
+          if ! diff -q /tmp/grapheme.h src/nllb-grapheme-data.h > /dev/null; then
+            echo "::error::src/nllb-grapheme-data.h is stale. Re-run"
+            echo "  python tools/gen_grapheme_tables.py > src/nllb-grapheme-data.h"
+            echo "and RE-RUN THE TOKENIZER GATE: a Unicode version bump can move"
+            echo "a cluster boundary, which moves the ids."
+            diff /tmp/grapheme.h src/nllb-grapheme-data.h | head -40
+            exit 1
+          fi
+
+      # The tokenizer gate is deliberately NOT here. It needs a real
+      # vocabulary - the 256204 pieces, the 514098 merges and the 237539-byte
+      # charsmap - and tests/make_tiny_model.py cannot invent one that means
+      # anything: a random vocab would exercise the trie walk against a trie
+      # nobody trained. It runs in real-model.yml, where tokenizer.json is
+      # already on disk. If you want it on every push, the cheap version is to
+      # fetch ONLY tokenizer.json (17 MB, no weights) and run
+      # tests/make_vocab_gguf.py - at the cost of this workflow depending on
+      # huggingface.co, which is the thing it was built not to do.

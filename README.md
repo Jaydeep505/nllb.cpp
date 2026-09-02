@@ -142,6 +142,15 @@ padded. The converter warns and continues — that warning is expected on NLLB.
 Encoder verification doesn't need the tokenizer at all (it feeds raw ids), so
 if the vocab path gives you trouble, `--no-tokenizer` unblocks the milestone.
 
+**The tokenizer is now implemented in C++ — see `TOKENIZER.md`.** Two things
+that document exists to correct, because both were wrong here for seven steps:
+NLLB's tokenizer is **BPE**, not Unigram (`sentencepiece.bpe.model` means what
+its name says), and the reference to match is HuggingFace's *fast* tokenizer,
+not sentencepiece — they normalize differently, and the difference changes ids.
+A GGUF converted before that step lacks the precompiled charsmap and is refused
+at load rather than tokenizing ASCII correctly and everything else silently
+wrong.
+
 ## Next
 
 `tools/dump_reference.py --per-layer` writes golden `.bin` files plus every
