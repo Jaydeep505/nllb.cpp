@@ -37,11 +37,13 @@ Design notes that matter for a from-scratch C++ port:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import os
 import sys
 from pathlib import Path
+from typing import Iterable, Sequence
 
 import numpy as np
 
@@ -238,12 +240,85 @@ def resolve_position_table(ck: Checkpoint, max_pos: int, d_model: int,
 # tokenizer
 # --------------------------------------------------------------------------
 
+def fnv1a64(items: Iterable[str]) -> int:
+    """FNV-1a over `\\n`-joined UTF-8. Must match nllb_vocab's C++ copy."""
+    h = 0xCBF29CE484222325
+    for i, s in enumerate(items):
+        if i:
+            h = ((h ^ 0x0A) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+        for b in s.encode("utf-8"):
+            h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def derive_merges(tokens: Sequence[str]) -> list[str]:
+    """Rebuild HF's BPE merge list from the vocabulary ORDER alone.
+
+    This is transformers' SentencePieceExtractor.extract() with
+    vocab_scores=None, which is the branch that produced NLLB's tokenizer.json:
+    for each piece in id order, every split whose halves are both in the vocab,
+    those splits ordered by (left id, right id).
+
+    Verified byte-for-byte against the 514098 merges in the real
+    facebook/nllb-200-distilled-600M tokenizer.json - which is why the C++ side
+    can derive them too instead of the GGUF carrying ~6 MB of merge strings.
+    `tokenizer.nllb.merges_hash` is what keeps that a checked invariant rather
+    than an assumption: see the comment where it is written.
+    """
+    index = {t: i for i, t in enumerate(tokens)}
+    out: list[str] = []
+    for piece in tokens:
+        local = []
+        for i in range(1, len(piece)):
+            l, r = piece[:i], piece[i:]
+            il, ir = index.get(l), index.get(r)
+            if il is not None and ir is not None:
+                local.append((il, ir, l, r))
+        local.sort(key=lambda x: (x[0], x[1]))
+        out.extend(f"{l} {r}" for _, _, l, r in local)
+    return out
+
+
+def grapheme_tables():
+    """(gcb_flat, extpict_flat, ucd_version), or None if `regex` is missing.
+
+    These are the UAX#29 tables the normalizer needs to find grapheme cluster
+    boundaries. They are NOT a property of the model - every SentencePiece
+    checkpoint would carry the same ~8 KB - but they ARE a property of the ids,
+    because a cluster boundary that moves moves the tokenization. Baking them
+    in makes the ids a function of the GGUF alone rather than of the GGUF and
+    whichever Unicode release the binary happened to be built against.
+
+    Computed through tools/gen_grapheme_tables.py, the same code that writes
+    the committed src/nllb-grapheme-data.h, so the two cannot disagree.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from gen_grapheme_tables import build_tables, flatten
+        rows, pr, ucd = build_tables()
+    except ImportError as e:
+        print(f"  ! no grapheme tables in this file ({e}); the C++ will fall "
+              "back to its compiled-in copy", file=sys.stderr)
+        return None
+    gcb, ext = flatten(rows, pr)
+    return gcb, ext, ucd
+
+
 def load_vocab(model_dir: Path):
     """Return (tokens, scores, toktypes, meta) or None.
 
     Prefers tokenizer.json, whose vocab dict already has NLLB's fairseq +1 id
     offset and the 200+ FLORES language codes baked in - so we never have to
     guess at the offset arithmetic.
+
+    meta carries two things the tokenizer needs that the old schema had no room
+    for: `charsmap` (SentencePiece's precompiled normalizer, without which
+    U+FB01 never becomes "fi" and U+2044 never appears) and `merges_hash`.
+
+    NOTE: NLLB's tokenizer is BPE, not Unigram, despite the Unigram-shaped
+    `scores` array this converter has always written. `sentencepiece.bpe.model`
+    means what its name says: model_type == BPE, and the scores are negated
+    merge ranks rather than log-probabilities. Nothing reads them today.
     """
     tok_json = model_dir / "tokenizer.json"
     spm_file = model_dir / "sentencepiece.bpe.model"
@@ -278,7 +353,66 @@ def load_vocab(model_dir: Path):
             tokens[idx] = t["content"]
             toktypes[idx] = (gguf.TokenType.CONTROL if t.get("special")
                              else gguf.TokenType.USER_DEFINED)
-        return tokens, scores, toktypes, {"source": "tokenizer.json"}
+
+        meta = {"source": "tokenizer.json", "model_type": tj["model"]["type"]}
+
+        # HF's AddedVocabulary cuts these out of the raw input before the
+        # normalizer ever sees it, so "x eng_Latn y" is three chunks and not
+        # one sentence. The C++ needs the strings AND their flags.
+        # bit0 single_word, bit1 lstrip, bit2 rstrip, bit3 normalized.
+        atoks, aflags = [], []
+        for t in tj.get("added_tokens", []):
+            if t.get("single_word"):
+                raise SystemExit(
+                    f"added token {t['content']!r} sets single_word, which "
+                    "nllb_vocab does not implement. Refusing rather than "
+                    "writing a GGUF that tokenizes differently to HF.")
+            atoks.append(t["content"])
+            aflags.append((2 if t.get("lstrip") else 0) |
+                          (4 if t.get("rstrip") else 0) |
+                          (8 if t.get("normalized") else 0))
+        meta["added_tokens"] = atoks
+        meta["added_flags"] = aflags
+
+        # the normalizer. HF serialises it as a Sequence; we want the
+        # Precompiled member's charsmap, and we assert the rest of the sequence
+        # is the ` {2,}` -> ` ` Replace that nllb_vocab hard-codes. A different
+        # normalizer stack here means the C++ is normalising something else.
+        norm = tj.get("normalizer") or {}
+        seq = norm.get("normalizers", [norm])
+        kinds = [x.get("type") for x in seq]
+        if kinds != ["Precompiled", "Replace"]:
+            raise SystemExit(
+                f"unexpected normalizer stack {kinds}; nllb_vocab implements "
+                "[Precompiled, Replace(' {2,}' -> ' ')] and nothing else")
+        rep = seq[1]
+        if rep.get("pattern", {}).get("Regex") != " {2,}" or rep.get("content") != " ":
+            raise SystemExit(f"unexpected Replace rule: {rep}")
+        meta["charsmap"] = base64.b64decode(seq[0]["precompiled_charsmap"])
+
+        pre = tj.get("pre_tokenizer") or {}
+        if pre.get("type") != "Metaspace" or pre.get("replacement") != "▁":
+            raise SystemExit(f"unexpected pre_tokenizer: {pre}")
+
+        # The merge list. We do NOT write it: it is exactly reproducible from
+        # the vocabulary order, and the C++ rebuilds it the same way. What we
+        # write is a hash of the merges HF actually serialised, so that
+        # derivation is checked rather than trusted - if a future checkpoint's
+        # tokenizer.json was built by a transformers version whose extractor
+        # orders splits differently, the C++ refuses to load instead of
+        # tokenizing subtly differently for the rest of its life.
+        hf_merges = [m if isinstance(m, str) else " ".join(m)
+                     for m in tj["model"]["merges"]]
+        derived = derive_merges(tokens)
+        if derived != hf_merges:
+            raise SystemExit(
+                f"derive_merges() reproduced {len(derived)} merges but "
+                f"tokenizer.json has {len(hf_merges)} and they differ. The C++ "
+                "tokenizer derives merges from the vocab order and would be "
+                "wrong on this checkpoint. Do not ship this GGUF.")
+        meta["merges_hash"] = fnv1a64(hf_merges)
+        meta["n_merges"] = len(hf_merges)
+        return tokens, scores, toktypes, meta
 
     if not spm_file.exists():
         return None
@@ -323,7 +457,39 @@ def load_vocab(model_dir: Path):
     scores.append(0.0)
     toktypes.append(gguf.TokenType.USER_DEFINED)
 
-    return tokens, scores, toktypes, {"source": "sentencepiece.bpe.model"}
+    # The normalizer lives in the proto, not in the piece list.
+    charsmap = b""
+    try:
+        from sentencepiece import sentencepiece_model_pb2 as spm_pb2
+        proto = spm_pb2.ModelProto()
+        proto.ParseFromString(sp.serialized_model_proto())
+        charsmap = proto.normalizer_spec.precompiled_charsmap
+        if proto.trainer_spec.model_type != spm_pb2.TrainerSpec.BPE:
+            print("  ! this sentencepiece model is not BPE; the C++ tokenizer "
+                  "implements BPE only", file=sys.stderr)
+    except Exception as e:                       # noqa: BLE001
+        print(f"  ! could not read the normalizer out of the spm proto ({e}); "
+              "the C++ tokenizer will refuse to load this GGUF",
+              file=sys.stderr)
+
+    # No tokenizer.json means nothing to check the derivation AGAINST: this
+    # hash is self-consistent only, and says so. Convert from a snapshot that
+    # has tokenizer.json if you want the checked version.
+    print("  ! no tokenizer.json: merges are derived and UNVERIFIED",
+          file=sys.stderr)
+    derived = derive_merges(tokens)
+    # Every special here is plain: no lstrip/rstrip/single_word, matched on the
+    # raw text. <mask> is the one exception and it is flagged as HF flags it.
+    specials = ["<s>", "<pad>", "</s>", "<unk>"] + langs + ["<mask>"]
+    return tokens, scores, toktypes, {
+        "source": "sentencepiece.bpe.model",
+        "charsmap": charsmap,
+        "merges_hash": fnv1a64(derived),
+        "merges_hash_source": "derived (unverified)",
+        "n_merges": len(derived),
+        "added_tokens": specials,
+        "added_flags": [(2 | 8) if s == "<mask>" else 0 for s in specials],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -464,7 +630,45 @@ def main() -> int:
             w.add_add_bos_token(False)   # NLLB prepends a source LANGUAGE code
             w.add_add_eos_token(True)
             w.add_string(f"tokenizer.{ARCH}.vocab_source", meta["source"])
-            print(f"  vocab: {len(tokens)} tokens from {meta['source']}")
+
+            # --- what the C++ tokenizer actually needs ---------------------
+            # SentencePiece's normalizer, as a double-array trie plus a blob of
+            # replacement strings. Without it "ﬁ" never becomes "fi", "½" never
+            # becomes "1⁄2", NBSP never becomes a space, and the ids diverge
+            # from HF on any input that is not plain ASCII.
+            cm = meta.get("charsmap") or b""
+            if cm:
+                w.add_precompiled_charsmap(cm)
+                print(f"  charsmap: {len(cm)} bytes")
+            else:
+                print("  ! NO precompiled_charsmap written - the C++ tokenizer "
+                      "will refuse to load this file", file=sys.stderr)
+
+            w.add_array(f"tokenizer.{ARCH}.added_tokens", meta["added_tokens"])
+            w.add_array(f"tokenizer.{ARCH}.added_flags", meta["added_flags"])
+
+            # UAX#29 grapheme cluster tables. See grapheme_tables().
+            gt = grapheme_tables()
+            if gt:
+                gcb, ext, ucd = gt
+                w.add_array(f"tokenizer.{ARCH}.gcb_ranges", gcb)
+                w.add_array(f"tokenizer.{ARCH}.extpict_ranges", ext)
+                w.add_string(f"tokenizer.{ARCH}.ucd_version", ucd)
+                print(f"  graphemes: {len(gcb) // 3} GCB ranges + "
+                      f"{len(ext) // 2} pictographic, UCD {ucd} "
+                      f"({(len(gcb) + len(ext)) * 4} bytes)")
+
+            # The merges are DERIVED on the C++ side from the vocab order; this
+            # is the hash that makes that derivation a checked invariant.
+            w.add_uint64(f"tokenizer.{ARCH}.merges_hash", meta["merges_hash"])
+            w.add_uint32(f"tokenizer.{ARCH}.n_merges", meta["n_merges"])
+            w.add_string(f"tokenizer.{ARCH}.merges_hash_source",
+                         meta.get("merges_hash_source", "tokenizer.json"))
+
+            print(f"  vocab: {len(tokens)} tokens from {meta['source']}, "
+                  f"{meta['n_merges']} merges "
+                  f"(hash {meta['merges_hash']:#018x}, "
+                  f"{meta.get('merges_hash_source', 'tokenizer.json')})")
 
     # ---- tensors ----------------------------------------------------------
     n_written = 0
