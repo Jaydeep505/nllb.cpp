@@ -200,6 +200,25 @@ jobs:
       # graph right", the cache gate owns "does caching change the answer".
       # Reading a green cache gate as evidence about the model is the mistake.
 
+      - name: CLI - the text -> text gate must fire without the weights
+        # tests/verify_translation.py is the first gate here that can ONLY run
+        # where the real checkpoint is, and that is exactly where a broken gate
+        # is least likely to be noticed. tests/fake_cli.py is an honest
+        # stand-in for nllb-cli that looks its answers up, plus ten deliberate
+        # breakages - each a mistake the real CLI could plausibly make. The
+        # matrix asserts the honest stand-in PASSES and every breakage turns
+        # the gate red. No weights, no torch, about a second.
+        #
+        # Two of the ten (swap, ignore-tgt) are caught by [wiring] alone, which
+        # is the argument for that pass existing: it checks the language codes
+        # BY POSITION in the id sequences rather than by whether the output
+        # reads well, so it works on a model that cannot translate at all.
+        run: |
+          ./build/bin/nllb-cli --help
+          python tests/fake_cli.py --make-goldens ref-fake/
+          python tests/verify_translation.py tests/fake_cli.py MODEL ref-fake/
+          python tests/fake_cli.py --matrix ref-fake/
+
       - name: The committed grapheme tables must match their generator
         # src/nllb-grapheme-data.h is generated but COMMITTED, so that building
         # needs no Python. That is only safe if something notices when the two

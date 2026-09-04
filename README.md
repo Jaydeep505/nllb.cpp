@@ -1,4 +1,21 @@
-# nllb.cpp — step 1: NLLB → GGUF
+# nllb.cpp
+
+`facebook/nllb-200-distilled-600M` in C++ on ggml, in the spirit of
+whisper.cpp: one GGUF, no Python at runtime, no dependency but vendored ggml.
+
+```bash
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
+    --src eng_Latn --tgt deu_Latn "Hello, world!"
+```
+
+Encoder, decoder, greedy generation, the KV cache, f16 weights and the
+tokenizer are each verified against HuggingFace — see `DECODER.md`,
+`GENERATE.md`, `CACHE.md`, `PROFILE.md`, `PRECISION.md`, `TOKENIZER.md`. The
+CLI and the first text → text gate are `CLI.md`.
+
+---
+
+## Step 1: NLLB → GGUF
 
 Converts `facebook/nllb-200-distilled-600M` to GGUF and proves the result
 reproduces HuggingFace's encoder to float tolerance. Nothing here needs a GPU

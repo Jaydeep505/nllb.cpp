@@ -166,6 +166,34 @@ jobs:
         # any difference is the sequence length rather than the cache.
         run: ./build/bin/nllb-test-cache models/nllb-600M-f32.gguf ref/ -t 4 -v
 
+      - name: Dump the translation goldens (text -> text)
+        # The ONLY reference dump in this repo whose output is text rather than
+        # numbers. It also records the checkpoint's own generation_config
+        # num_beams, which is the open question in claude/handoff.md: if that
+        # default is above 1, every "exact against generate()" claim here is
+        # exact against a NON-default configuration.
+        run: |
+          python tools/dump_translation_reference.py models/nllb-600M --out ref/ \
+              --src-lang eng_Latn --tgt-lang "$TGT_LANG" --max-new-tokens "$MAX_NEW"
+          cat ref/translations.txt
+
+      - name: CLI gate - text in, text out
+        # The first comparison in this project that is not about ids. Every
+        # other gate stops at them, so nothing above can see the target code
+        # forced at the wrong position, --src and --tgt swapped, a lost or
+        # doubled leading space, or the eos surviving into the printed string.
+        run: |
+          python tests/verify_translation.py ./build/bin/nllb-cli \
+              models/nllb-600M-f32.gguf ref/ -t 4
+
+      - name: The CLI gate must actually fire
+        # Same argument as the tokenizer harness: a gate whose failure modes
+        # have never been exercised has an unknown sensitivity. This one runs
+        # against a stand-in, so it costs a second and needs no weights.
+        run: |
+          python tests/fake_cli.py --make-goldens ref-fake/
+          python tests/fake_cli.py --matrix ref-fake/
+
       - name: Upload the German output
         # ref/*.dec.json carries greedy_text next to the ids, so a green run is
         # readable as translations rather than as integers.
