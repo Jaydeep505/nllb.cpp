@@ -29,6 +29,15 @@ target_compile_options(nllb PRIVATE ${NLLB_WARN})
 target_include_directories(nllb PUBLIC src)
 target_link_libraries(nllb PUBLIC ggml)
 
+# The CLI. This is the only binary here that is a *product* rather than a
+# gate: text in, translation out, no goldens and no reference dumps. It is
+# also the first thing in the repo to cross the text -> text seam, which is
+# why tests/verify_translation.py exists.
+add_executable(nllb-cli cli/nllb-cli.cpp)
+target_link_libraries(nllb-cli PRIVATE nllb)
+target_compile_options(nllb-cli PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 add_executable(nllb-test tests/test_encoder.cpp)
 target_link_libraries(nllb-test PRIVATE nllb)
 target_compile_options(nllb-test PRIVATE ${NLLB_WARN})
