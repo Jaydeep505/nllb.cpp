@@ -85,6 +85,13 @@ struct nllb_model {
     ggml_context * ctx_w = nullptr;
     gguf_context * gguf  = nullptr;
 
+    // When the weights are mmap'ed, ctx_w owns only the ggml_tensor STRUCTS
+    // and every ->data points into this read-only mapping of the file. When
+    // they are read, this is null and ctx_w owns the bytes as well.
+    void * mapping      = nullptr;
+    size_t mapping_size = 0;
+    bool   mapped       = false;   // what actually happened, not what was asked
+
     ggml_tensor * lm_head() const { return output_w ? output_w : tok_embd; }
 
     ~nllb_model();
@@ -100,7 +107,22 @@ struct nllb_encode_result {
     std::vector<std::vector<float>> hidden_states;  // n_layer + 1 of [T, d_model]
 };
 
-bool nllb_model_load(const std::string & path, nllb_model & model, std::string & err);
+// use_mmap maps the file read-only and points every weight tensor into the
+// mapping, instead of copying the tensor blob onto the heap. The weights are
+// never written, so the two paths are BIT-IDENTICAL by construction and that
+// is the assertion tests/test_mmap.cpp makes - it is an allocation change, in
+// the same family as the graph arena reuse in step 6, not a numerical one.
+//
+// What it buys is not FLOPs: it removes a memcpy of the whole tensor blob
+// (~700 ms of the f32 file's 1100 ms load; the rest is the tokenizer), makes
+// a second process share one copy rather than two, and turns dirty anonymous
+// pages into clean file-backed ones the kernel can reclaim for free.
+//
+// It falls back to reading, with mapped=false, when the platform has no mmap
+// or the file's alignment does not permit it. Nothing above this call has to
+// care which happened.
+bool nllb_model_load(const std::string & path, nllb_model & model, std::string & err,
+                     bool use_mmap = true);
 
 bool nllb_encode(const nllb_model & model,
                  const std::vector<int32_t> & ids,

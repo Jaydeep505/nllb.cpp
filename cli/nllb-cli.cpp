@@ -80,6 +80,12 @@ void usage(const char * argv0) {
         "                        this from the decoder start token, so the id\n"
         "                        sequence is at most 1 + n long.\n"
         "  -t, --threads N       (default %d)\n"
+        "      --no-mmap         read the weights onto the heap instead of\n"
+        "                        mapping the file. Identical output either way\n"
+        "                        (nllb-test-mmap asserts it); the trade is a\n"
+        "                        near-zero load whose cost reappears as page\n"
+        "                        faults during the first tokens, against one\n"
+        "                        sequential read up front. MEASURE, do not assume.\n"
         "      --no-cache        re-decode the whole prefix every step. Same ids,\n"
         "                        O(n^2) instead of O(n) - see CACHE.md.\n"
         "  -v, --verbose         ids, pieces and timings, on stderr\n"
@@ -165,6 +171,7 @@ int main(int argc, char ** argv) {
     bool have_text  = false;
     bool list_langs = false;
     bool verbose    = false;
+    bool use_mmap   = true;
     bool use_cache  = true;   // see the note by nllb_generate_params::use_cache:
                               // the LIBRARY default is off so the step-4 gate
                               // keeps testing the un-cached path. A user-facing
@@ -187,6 +194,7 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(a, "--tgt"))                             tgt_lang   = need(a);
         else if (!std::strcmp(a, "-t") || !std::strcmp(a, "--threads")) n_threads = std::atoi(need(a));
         else if (!std::strcmp(a, "-n") || !std::strcmp(a, "--max-new-tokens")) max_new = std::atoi(need(a));
+        else if (!std::strcmp(a, "--no-mmap"))                         use_mmap   = false;
         else if (!std::strcmp(a, "--no-cache"))                        use_cache  = false;
         else if (!std::strcmp(a, "--list-langs"))                      list_langs = true;
         else if (!std::strcmp(a, "-v") || !std::strcmp(a, "--verbose")) verbose   = true;
@@ -240,7 +248,7 @@ int main(int argc, char ** argv) {
     const double t_load0 = now_ms();
 
     nllb_model model;
-    if (!nllb_model_load(model_path, model, err)) {
+    if (!nllb_model_load(model_path, model, err, use_mmap)) {
         std::fprintf(stderr, "model load failed: %s\n", err.c_str());
         return 2;
     }
@@ -293,7 +301,7 @@ int main(int argc, char ** argv) {
             "lm_head=%s\n"
             "vocab:  %zu tokens, %u merges, grapheme tables from %s%s%s\n"
             "run:    %s (%d) -> %s (%d) | max_new=%d | cache %s | %d threads\n"
-            "load:   %.1f ms\n",
+            "load:   %.1f ms (weights %s)\n",
             model_path.c_str(),
             model.hp.d_model, model.hp.n_layer, model.hp.n_dec_layer,
             model.hp.n_head, model.hp.n_dec_head, model.hp.n_vocab,
@@ -303,7 +311,8 @@ int main(int argc, char ** argv) {
             vocab.ucd_version.empty() ? "" : " UCD ",
             vocab.ucd_version.c_str(),
             src_lang.c_str(), src_id, tgt_lang.c_str(), tgt_id,
-            max_new, use_cache ? "on" : "off", n_threads, t_load);
+            max_new, use_cache ? "on" : "off", n_threads, t_load,
+            model.mapped ? "mmap'ed" : "read");
     }
 
     nllb_generate_params base;

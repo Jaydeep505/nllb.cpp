@@ -9,6 +9,16 @@
 #include <cstdio>
 #include <cstring>
 
+#ifndef _WIN32
+#  include <fcntl.h>
+#  include <sys/mman.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#  define NLLB_HAVE_MMAP 1
+#else
+#  define NLLB_HAVE_MMAP 0
+#endif
+
 // --------------------------------------------------------------------------
 // metadata helpers
 // --------------------------------------------------------------------------
@@ -44,28 +54,174 @@ ggml_tensor * need(ggml_context * ctx, const std::string & name, std::string & e
     return t;
 }
 
+double nllb_now_ms() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration<double, std::milli>(
+               clock::now().time_since_epoch()).count();
+}
+
+// Map the whole file read-only. Returns nullptr and leaves err untouched on
+// any failure - the caller falls back to reading, which is always correct.
+void * nllb_mmap_file(const std::string & path, size_t & out_size) {
+#if NLLB_HAVE_MMAP
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return nullptr;
+
+    struct stat st;
+    if (::fstat(fd, &st) != 0 || st.st_size <= 0) { ::close(fd); return nullptr; }
+
+    const double t_open = nllb_now_ms();
+    void * addr = ::mmap(nullptr, (size_t) st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    // The mapping outlives the descriptor: mmap holds its own reference to the
+    // file, so closing fd here leaks nothing and keeps the model struct simple.
+    ::close(fd);
+    if (addr == MAP_FAILED) return nullptr;
+    const double t_map = nllb_now_ms() - t_open;
+
+    // MADV_WILLNEED IS OFF BY DEFAULT, AND THAT IS THE POINT OF THIS COMMENT.
+    //
+    // The obvious thing to do here is tell the kernel we will read the whole
+    // file, so it can fault ahead instead of one page at a time. On Linux that
+    // is an asynchronous readahead hint and costs nothing. On Darwin it is
+    // SYNCHRONOUS - XNU pages the range in before returning - so it performs
+    // exactly the eager load mmap exists to avoid, and measurably slower than
+    // a plain read: 783 ms of "map" against 395 ms for read() of the same
+    // 1.235 GB f16 file, with the subsequent fault-in then reporting a
+    // fictitious 32 GB/s because the pages were already resident.
+    //
+    // So it is opt-in, and NLLB_LOAD_TRACE=1 prices it.
+    double t_advise = 0.0;
+    if (::getenv("NLLB_MADVISE")) {
+        const double t0 = nllb_now_ms();
+#  ifdef POSIX_MADV_WILLNEED
+        ::posix_madvise(addr, (size_t) st.st_size, POSIX_MADV_WILLNEED);
+#  elif defined(MADV_WILLNEED)
+        ::madvise(addr, (size_t) st.st_size, MADV_WILLNEED);
+#  endif
+        t_advise = nllb_now_ms() - t0;
+    }
+
+    if (::getenv("NLLB_LOAD_TRACE")) {
+        std::fprintf(stderr,
+            "[load-trace] open+fstat+mmap %7.2f ms   madvise %7.2f ms%s\n",
+            t_map, t_advise, ::getenv("NLLB_MADVISE") ? "" : " (off)");
+    }
+
+    out_size = (size_t) st.st_size;
+    return addr;
+#else
+    (void) path; (void) out_size;
+    return nullptr;
+#endif
+}
+
+void nllb_munmap_file(void * addr, size_t size) {
+#if NLLB_HAVE_MMAP
+    if (addr) ::munmap(addr, size);
+#else
+    (void) addr; (void) size;
+#endif
+}
+
 } // namespace
 
 nllb_model::~nllb_model() {
-    if (gguf)  { gguf_free(gguf);       gguf  = nullptr; }
-    if (ctx_w) { ggml_free(ctx_w);      ctx_w = nullptr; }
+    // Order matters: ctx_w's tensors point INTO the mapping when mapped, so
+    // the context goes first and the mapping last. Freeing the map first
+    // leaves dangling ->data behind for anything still holding the model.
+    if (gguf)    { gguf_free(gguf);  gguf  = nullptr; }
+    if (ctx_w)   { ggml_free(ctx_w); ctx_w = nullptr; }
+    if (mapping) { nllb_munmap_file(mapping, mapping_size);
+                   mapping = nullptr; mapping_size = 0; mapped = false; }
 }
 
 // --------------------------------------------------------------------------
 // load
 // --------------------------------------------------------------------------
 
-bool nllb_model_load(const std::string & path, nllb_model & model, std::string & err) {
+bool nllb_model_load(const std::string & path, nllb_model & model, std::string & err,
+                     bool use_mmap) {
+    // Try the mapping FIRST, because it decides how gguf is asked to parse:
+    // no_alloc = true creates the ggml_tensor structs with correct name, type
+    // and ne but leaves ->data null and reads no bytes, which is exactly the
+    // shape we need. If the map fails we fall back to no_alloc = false and
+    // gguf copies the blob onto the heap as before.
+    size_t map_size = 0;
+    void * map_addr = use_mmap ? nllb_mmap_file(path, map_size) : nullptr;
+
     ggml_context * ctx_data = nullptr;
     gguf_init_params gp = {};
-    gp.no_alloc = false;          // let gguf allocate + read the tensor data
+    gp.no_alloc = map_addr != nullptr;
     gp.ctx      = &ctx_data;
 
+    const bool trace = ::getenv("NLLB_LOAD_TRACE") != nullptr;
+    const double t_parse0 = nllb_now_ms();
     gguf_context * g = gguf_init_from_file(path.c_str(), gp);
-    if (!g) { err = "gguf_init_from_file failed: " + path; return false; }
+    if (!g) {
+        if (map_addr) nllb_munmap_file(map_addr, map_size);
+        err = "gguf_init_from_file failed: " + path;
+        return false;
+    }
+    if (trace) {
+        // With no_alloc = true this is metadata only - but "metadata only"
+        // still means the tokenizer's ~7 MB of KV: 256204 token strings, the
+        // charsmap and the grapheme tables. It is not free, and once the blob
+        // copy is gone it is a visible share of what remains.
+        std::fprintf(stderr, "[load-trace] gguf parse (%s) %7.2f ms\n",
+                     gp.no_alloc ? "no_alloc, metadata only"
+                                 : "reads the whole tensor blob",
+                     nllb_now_ms() - t_parse0);
+    }
 
     model.gguf  = g;
     model.ctx_w = ctx_data;
+
+    if (map_addr) {
+        // Point every tensor at its bytes inside the mapping. gguf_get_data_
+        // offset is where the blob starts (padded to general.alignment) and
+        // each tensor offset is relative to that.
+        const double   t_fix0   = nllb_now_ms();
+        const size_t   data_off = gguf_get_data_offset(g);
+        const int64_t  n_tensor = gguf_get_n_tensors(g);
+        const size_t   align    = gguf_get_alignment(g);
+        char * const   base     = (char *) map_addr;
+
+        // ggml's kernels want their rows aligned. mmap hands back a page-
+        // aligned base and GGUF pads data_off and every tensor offset to
+        // `align`, so the sum is aligned iff align is - refuse rather than
+        // hand a misaligned pointer to a SIMD kernel and crash somewhere else.
+        bool ok = align >= 16 && (align & (align - 1)) == 0 && data_off % align == 0;
+
+        for (int64_t i = 0; ok && i < n_tensor; ++i) {
+            const char * name = gguf_get_tensor_name(g, i);
+            ggml_tensor * t = ggml_get_tensor(ctx_data, name);
+            if (!t) { ok = false; break; }
+
+            const size_t off = gguf_get_tensor_offset(g, i);
+            if (data_off + off + ggml_nbytes(t) > map_size) { ok = false; break; }
+            t->data = base + data_off + off;
+        }
+
+        if (!ok) {
+            // Nothing is half-done: drop the whole attempt and redo the load
+            // by reading. A file we cannot map is not a file we cannot use.
+            gguf_free(g);
+            ggml_free(ctx_data);
+            model.gguf = nullptr; model.ctx_w = nullptr;
+            nllb_munmap_file(map_addr, map_size);
+            return nllb_model_load(path, model, err, /*use_mmap =*/ false);
+        }
+
+        model.mapping      = map_addr;
+        model.mapping_size = map_size;
+        model.mapped       = true;
+
+        if (trace) {
+            std::fprintf(stderr,
+                "[load-trace] pointer fixup, %lld tensors %7.2f ms\n",
+                (long long) n_tensor, nllb_now_ms() - t_fix0);
+        }
+    }
 
     {
         const int64_t id = gguf_find_key(g, "general.architecture");
