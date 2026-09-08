@@ -68,6 +68,11 @@ target_link_libraries(nllb-test-tokenizer PRIVATE nllb)
 target_compile_options(nllb-test-tokenizer PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-tokenizer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+add_executable(nllb-test-mmap tests/test_mmap.cpp)
+target_link_libraries(nllb-test-mmap PRIVATE nllb)
+target_compile_options(nllb-test-mmap PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-test-mmap PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 add_executable(nllb-test-precision tests/test_precision.cpp)
 target_link_libraries(nllb-test-precision PRIVATE nllb)
 target_compile_options(nllb-test-precision PRIVATE ${NLLB_WARN})

@@ -22,4 +22,12 @@ build/
 *.dylib
 
 .DS_Store
+
 *.tar.gz
+*.tgz
+
+# scratch from CLI runs — regenerate by re-running nllb-cli
+output.txt
+output-*.txt
+log.txt
+log-*.txt
