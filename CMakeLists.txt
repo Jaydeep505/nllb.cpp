@@ -1,3 +1,48 @@
+# nllb.cpp - NLLB-200 inference on ggml, no dependencies beyond the submodule.
+#
+# ---------------------------------------------------------------------------
+# BUILD
+# ---------------------------------------------------------------------------
+#   git submodule update --init --recursive        # vendor/ggml, first time only
+#   cmake -B build -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build -j
+#
+#   cmake --build build --target nllb-cli -j       # one target
+#   rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release   # after moving
+#                                                  # or bumping the submodule
+#
+# Release is the default if CMAKE_BUILD_TYPE is unset (see below), but pass it
+# anyway: a Debug build of this is ~20x slower and the first thing you would
+# notice is a bench number that means nothing.
+#
+# On macOS the configure step finds Accelerate, BLAS and Metal and links them.
+# Seeing "Including METAL backend" does NOT mean anything runs on the GPU -
+# nllb.cpp calls ggml_graph_compute_with_ctx, which is the CPU executor. The
+# verified path is CPU.
+#
+# ---------------------------------------------------------------------------
+# WHAT GETS BUILT, and what each one claims
+# ---------------------------------------------------------------------------
+#   bin/nllb-cli             THE PRODUCT. text in, translation out.
+#   bin/nllb-quantize        f32/f16 GGUF -> quantised, via ggml_quantize_chunk.
+#                            Required for the K-quants; gguf-py cannot write
+#                            them (trap 33).  --list-mixes
+#
+#   bin/nllb-test            encoder vs HF goldens
+#   bin/nllb-test-decoder    decoder vs HF goldens, per-layer bisect. f32 ONLY -
+#                            its tolerances ARE the f32 noise floor (trap 19)
+#   bin/nllb-test-generate   greedy ids vs HF generate(), exact
+#   bin/nllb-test-cache      cached vs un-cached. full = exact.  --kv-f16
+#   bin/nllb-test-precision  two precisions: ids, margins, [topk].
+#                            --allow-id-drift  --kv f32:f16
+#   bin/nllb-test-tokenizer  text -> ids vs HF, exact, 5 passes
+#   bin/nllb-test-mmap       mmap vs read: every weight byte identical
+#   bin/nllb-bench           where the cached step goes.  --kv-f16
+#
+# The gates run in one command: ./tools/step10_measure.sh
+# Everything above is documented in claude/handoff.md; the trap numbers refer
+# to its "traps" section.
+# ---------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.14)
 project(nllb.cpp CXX C)
 
@@ -72,6 +117,15 @@ add_executable(nllb-test-mmap tests/test_mmap.cpp)
 target_link_libraries(nllb-test-mmap PRIVATE nllb)
 target_compile_options(nllb-test-mmap PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-mmap PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# The quantiser. A TOOL, not a gate: it writes files, it asserts about the file
+# it wrote (trap 32), and it makes no claim about the model. It links ggml
+# directly rather than through libnllb because it never builds a graph - it
+# reads a GGUF, calls ggml_quantize_chunk and writes another one.
+add_executable(nllb-quantize tools/nllb-quantize.cpp)
+target_link_libraries(nllb-quantize PRIVATE ggml)
+target_compile_options(nllb-quantize PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-quantize PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_executable(nllb-test-precision tests/test_precision.cpp)
 target_link_libraries(nllb-test-precision PRIVATE nllb)
