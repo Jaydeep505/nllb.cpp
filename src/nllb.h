@@ -231,8 +231,38 @@ bool nllb_decode(const nllb_model & model,
 //   k_cross[HD, n_src, H]    v_cross[n_src, HD, H]     built once, then frozen
 // --------------------------------------------------------------------------
 
+// Storage type for the cached K and V. The WEIGHTS' precision is a property of
+// the GGUF; this is a property of the run, so it is a parameter rather than a
+// build option.
+//
+// f16 halves the cache and halves the bytes attention reads per step. It is NOT
+// free and it is not the same kind of change as f16 weights: K and V are
+// ACTIVATIONS on a pre-layernorm residual stream that reaches ~4200 by block 4
+// and is never renormalised, so rounding them costs headroom that step 7
+// measured at only 1.50x to begin with.
+//
+// AND IT CHANGES WHAT tests/test_cache.cpp CAN ASSERT, which is the part to
+// read before turning it on. `full = exact` - one cached call over the whole
+// prefix, bit-identical to the un-cached pass - is the project's strongest
+// cache claim, and it holds because both sides do the same arithmetic on the
+// same bytes. At NLLB_KV_F16 the cached side rounds K and V and the un-cached
+// side does not, so the two CANNOT be bit-identical and asking for it would be
+// trap 19 in a new costume. The gate therefore keeps `full = exact` as a
+// required assertion at NLLB_KV_F32 and, under --kv-f16, runs BOTH and reports
+// the f16 difference next to the f32 one. Red at f32 is a cache bug; red only
+// at f16 is f16. See trap 37.
+enum nllb_kv_type {
+    NLLB_KV_F32 = 0,
+    NLLB_KV_F16 = 1,
+};
+
 struct nllb_kv_cache {
     ggml_context * ctx = nullptr;   // owns the four tensor sets below
+
+    // NLLB_KV_F32 or NLLB_KV_F16. Set by nllb_kv_cache_init and read by
+    // nllb_decode_cached only through the tensors themselves, which carry
+    // their own type - this field exists for reporting, not for dispatch.
+    int32_t kv_type = NLLB_KV_F32;
 
     int32_t n_ctx   = 0;   // capacity in decoder tokens
     int32_t n_past  = 0;   // tokens currently stored in the self-attention half
@@ -291,12 +321,17 @@ struct nllb_kv_cache {
 //
 // n_ctx_cache is the longest decoder sequence this cache will hold, counting
 // the decoder_start token. Asking for more than the model's n_ctx is refused.
+//
+// kv_type defaults to NLLB_KV_F32, which is the configuration every claim in
+// claude/handoff.md was measured on. Passing NLLB_KV_F16 halves the cache and
+// costs headroom - see the note on nllb_kv_type above.
 bool nllb_kv_cache_init(const nllb_model & model,
                         const nllb_encode_result & enc,
                         int n_ctx_cache,
                         int n_threads,
                         nllb_kv_cache & cache,
-                        std::string & err);
+                        std::string & err,
+                        int kv_type = NLLB_KV_F32);
 
 // Rewind the self-attention half without touching the cross-attention half.
 // Valid only for the same source sentence; use a fresh init for a new one.
@@ -379,6 +414,11 @@ struct nllb_generate_params {
     // default that silently switched the reference out from under the step-4
     // gate would make that gate stop testing what its name says.
     bool    use_cache      = false;
+    // Ignored unless use_cache. NLLB_KV_F32 is the default for the same reason
+    // use_cache is false: it is the configuration the goldens were measured
+    // against, and a default that quietly changed the arithmetic would make
+    // every gate stop testing what its name says.
+    int32_t kv_type        = NLLB_KV_F32;
 };
 
 // Per-step trace. `margin` is top1 - top2 over the vocabulary *before* forcing:

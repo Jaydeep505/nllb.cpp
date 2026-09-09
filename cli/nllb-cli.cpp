@@ -88,6 +88,13 @@ void usage(const char * argv0) {
         "                        sequential read up front. MEASURE, do not assume.\n"
         "      --no-cache        re-decode the whole prefix every step. Same ids,\n"
         "                        O(n^2) instead of O(n) - see CACHE.md.\n"
+        "      --kv-f16          store the cached K and V at f16 instead of f32.\n"
+        "                        Halves the cache and the bytes attention reads,\n"
+        "                        and SPENDS HEADROOM: K and V are activations on a\n"
+        "                        residual stream that reaches ~4200 and is never\n"
+        "                        renormalised. Off by default. Run\n"
+        "                        nllb-test-precision --kv f32:f16 on YOUR pair\n"
+        "                        before trusting it.\n"
         "  -v, --verbose         ids, pieces and timings, on stderr\n"
         "  -h, --help\n"
         "\n"
@@ -172,6 +179,8 @@ int main(int argc, char ** argv) {
     bool list_langs = false;
     bool verbose    = false;
     bool use_mmap   = true;
+    bool kv_f16     = false;  // an arithmetic change, so it is opt-in. See the
+                              // note on nllb_kv_type in src/nllb.h.
     bool use_cache  = true;   // see the note by nllb_generate_params::use_cache:
                               // the LIBRARY default is off so the step-4 gate
                               // keeps testing the un-cached path. A user-facing
@@ -196,6 +205,7 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(a, "-n") || !std::strcmp(a, "--max-new-tokens")) max_new = std::atoi(need(a));
         else if (!std::strcmp(a, "--no-mmap"))                         use_mmap   = false;
         else if (!std::strcmp(a, "--no-cache"))                        use_cache  = false;
+        else if (!std::strcmp(a, "--kv-f16"))                          kv_f16     = true;
         else if (!std::strcmp(a, "--list-langs"))                      list_langs = true;
         else if (!std::strcmp(a, "-v") || !std::strcmp(a, "--verbose")) verbose   = true;
         else if (!std::strcmp(a, "-h") || !std::strcmp(a, "--help"))   { usage(argv[0]); return 0; }
@@ -311,13 +321,16 @@ int main(int argc, char ** argv) {
             vocab.ucd_version.empty() ? "" : " UCD ",
             vocab.ucd_version.c_str(),
             src_lang.c_str(), src_id, tgt_lang.c_str(), tgt_id,
-            max_new, use_cache ? "on" : "off", n_threads, t_load,
+            max_new,
+            use_cache ? (kv_f16 ? "on (KV f16)" : "on (KV f32)") : "off",
+            n_threads, t_load,
             model.mapped ? "mmap'ed" : "read");
     }
 
     nllb_generate_params base;
     base.max_new_tokens = max_new;
     base.use_cache      = use_cache;
+    base.kv_type        = kv_f16 ? NLLB_KV_F16 : NLLB_KV_F32;
     // forced_bos_id is set per call in translate_one; eos and dec_start come
     // from the model (dec_start is eos for NLLB, not bos - trap 8).
 

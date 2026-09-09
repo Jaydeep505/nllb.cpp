@@ -219,53 +219,81 @@ def serve(argv: list[str]) -> int:
 # does the gate fire?
 # --------------------------------------------------------------------------
 
+def _run_gate(gate: Path, here: Path, ref: Path, brk: str, extra):
+    env = dict(os.environ, FAKE_CLI_BREAK=brk, FAKE_CLI_REF=str(ref))
+    p = subprocess.run([sys.executable, str(gate), str(here), "MODEL",
+                        str(ref)] + list(extra),
+                       capture_output=True, text=True, env=env)
+    # Attribute each FAIL to the [pass] whose header last appeared. The
+    # summary line ("FAIL - n check(s)") is NOT inside a section, and
+    # counting it would make every mutation look like it fired the last
+    # pass - which is the same mistake tests/corrupt_tokenizer.py made
+    # when it sliced stdout on '[' and concluded only [sweep] ever fired.
+    fired = set()
+    section = None
+    for line in p.stdout.splitlines():
+        if line.startswith("["):
+            section = line.split("]")[0][1:]
+        elif line.startswith("FAIL -") or line.startswith("PASS"):
+            section = None
+        elif "FAIL" in line and section:
+            fired.add(section)
+    return p.returncode, ", ".join(sorted(fired)) or "-"
+
+
 def matrix(ref: Path) -> int:
+    """Every mutation, under BOTH assertions.
+
+    The second column is the one worth having. --allow-id-drift replaces byte
+    equality with chrF, and a metric that tolerates a changed token also
+    tolerates some real breakages - chrF strips whitespace, so a stray leading
+    space scores 100.00 against the golden and [golden] cannot see it at all.
+    That is not an argument against the flag; it is the reason [wiring] exists
+    and the reason this column is printed. A mutation caught only in the strict
+    column is a mutation that a quantised run would ship.
+    """
     here = Path(__file__).resolve()
     gate = here.parent / "verify_translation.py"
     rows = []
     for brk in [""] + list(BREAKAGES):
-        env = dict(os.environ, FAKE_CLI_BREAK=brk, FAKE_CLI_REF=str(ref))
-        p = subprocess.run([sys.executable, str(gate), str(here), "MODEL",
-                            str(ref)],
-                           capture_output=True, text=True, env=env)
-        # Attribute each FAIL to the [pass] whose header last appeared. The
-        # summary line ("FAIL - n check(s)") is NOT inside a section, and
-        # counting it would make every mutation look like it fired the last
-        # pass - which is the same mistake tests/corrupt_tokenizer.py made
-        # when it sliced stdout on '[' and concluded only [sweep] ever fired.
-        fired = set()
-        section = None
-        for line in p.stdout.splitlines():
-            if line.startswith("["):
-                section = line.split("]")[0][1:]
-            elif line.startswith("FAIL -") or line.startswith("PASS"):
-                section = None
-            elif "FAIL" in line and section:
-                fired.add(section)
-        rows.append((brk or "(none - honest stand-in)", p.returncode,
-                     ", ".join(sorted(fired)) or "-"))
+        rc_s, fired_s = _run_gate(gate, here, ref, brk, [])
+        rc_d, fired_d = _run_gate(gate, here, ref, brk, ["--allow-id-drift"])
+        rows.append((brk or "(none - honest stand-in)",
+                     rc_s, fired_s, rc_d, fired_d))
 
-    print(f"\n{'mutation':22s} {'rc':>3s}  passes that fired")
-    print("-" * 70)
+    print(f"\n{'mutation':22s} {'rc':>3s}  {'strict: passes that fired':32s}"
+          f" {'rc':>3s}  --allow-id-drift")
+    print("-" * 110)
     n_missed = 0
-    for brk, rc, fired in rows:
+    n_drift_only = 0
+    for brk, rc_s, fired_s, rc_d, fired_d in rows:
         if brk.startswith("("):
-            ok = rc == 0
-            note = "" if ok else "  <- the HONEST stand-in must pass"
+            ok = rc_s == 0 and rc_d == 0
+            note = "" if ok else "  <- the HONEST stand-in must pass BOTH"
         else:
-            ok = rc != 0
+            ok = rc_s != 0
             note = "" if ok else "  <- MISSED"
             if not ok:
                 n_missed += 1
-        print(f"{brk:22s} {rc:>3d}  {fired}{note}")
+            if ok and rc_d == 0:
+                note = "  <- STRICT ONLY: invisible once ids may drift"
+                n_drift_only += 1
+        print(f"{brk:22s} {rc_s:>3d}  {fired_s:32s} {rc_d:>3d}  {fired_d}{note}")
     print()
-    if rows[0][1] != 0:
+    if rows[0][1] != 0 or rows[0][3] != 0:
         print("FAIL - the gate rejects an honest stand-in")
         return 1
     if n_missed:
         print(f"FAIL - {n_missed} mutation(s) went undetected")
         return 1
-    print(f"PASS - {len(BREAKAGES)} mutations, all caught")
+    if n_drift_only:
+        print(f"NOTE - {n_drift_only} mutation(s) are caught ONLY by the strict "
+              f"assertion. That is a\n"
+              f"       measured property of --allow-id-drift, not a defect: "
+              f"keep byte equality as the\n"
+              f"       default and turn the flag on only for the checkpoint "
+              f"that has earned it.")
+    print(f"PASS - {len(BREAKAGES)} mutations, all caught by the strict gate")
     return 0
 
 

@@ -792,7 +792,8 @@ bool nllb_kv_cache_init(const nllb_model & model,
                         int n_ctx_cache,
                         int n_threads,
                         nllb_kv_cache & cache,
-                        std::string & err) {
+                        std::string & err,
+                        int kv_type) {
     const nllb_hparams & hp = model.hp;
     const int D  = hp.d_model;
     const int H  = hp.n_dec_head;
@@ -810,6 +811,16 @@ bool nllb_kv_cache_init(const nllb_model & model,
               " exceeds the model's n_ctx " + std::to_string(hp.n_ctx);
         return false;
     }
+    if (kv_type != NLLB_KV_F32 && kv_type != NLLB_KV_F16) {
+        err = "unknown kv cache type " + std::to_string(kv_type);
+        return false;
+    }
+    // The only place the type is turned into a ggml type. Everything below is
+    // written in terms of `kvt` and ggml_type_size(kvt), so adding a third
+    // option here is the whole change - and the arena formulas further down
+    // stay in units of f32 ACTIVATIONS, which is still correct because the
+    // cache is not in the graph arena.
+    const ggml_type kvt = kv_type == NLLB_KV_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
     if (cache.ctx) { ggml_free(cache.ctx); cache.ctx = nullptr; }
     cache.k_self.clear();  cache.v_self.clear();
@@ -818,9 +829,9 @@ bool nllb_kv_cache_init(const nllb_model & model,
     // Four tensors per layer. The self half is sized by capacity, the cross
     // half by the source length - which is why a new sentence needs a new init
     // and not a reset.
-    const size_t cache_floats = (size_t) L * 2 * ((size_t) n_ctx_cache * D + (size_t) Ts * D);
+    const size_t cache_elems = (size_t) L * 2 * ((size_t) n_ctx_cache * D + (size_t) Ts * D);
     ggml_init_params cp = {};
-    cp.mem_size   = cache_floats * sizeof(float)
+    cp.mem_size   = cache_elems * ggml_type_size(kvt)
                   + (size_t) ggml_tensor_overhead() * (4 * L + 16)
                   + 1024u * 1024;
     cp.mem_buffer = nullptr;
@@ -828,6 +839,7 @@ bool nllb_kv_cache_init(const nllb_model & model,
     cache.ctx = ggml_init(cp);
     if (!cache.ctx) { err = "ggml_init failed (kv cache)"; return false; }
 
+    cache.kv_type = kv_type;
     cache.n_ctx   = n_ctx_cache;
     cache.n_past  = 0;
     cache.n_src   = Ts;
@@ -838,10 +850,10 @@ bool nllb_kv_cache_init(const nllb_model & model,
     cache.k_self.resize(L);  cache.v_self.resize(L);
     cache.k_cross.resize(L); cache.v_cross.resize(L);
     for (int il = 0; il < L; ++il) {
-        cache.k_self[il]  = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, HD, n_ctx_cache, H);
-        cache.v_self[il]  = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, n_ctx_cache, HD, H);
-        cache.k_cross[il] = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, HD, Ts, H);
-        cache.v_cross[il] = ggml_new_tensor_3d(cache.ctx, GGML_TYPE_F32, Ts, HD, H);
+        cache.k_self[il]  = ggml_new_tensor_3d(cache.ctx, kvt, HD, n_ctx_cache, H);
+        cache.v_self[il]  = ggml_new_tensor_3d(cache.ctx, kvt, n_ctx_cache, HD, H);
+        cache.k_cross[il] = ggml_new_tensor_3d(cache.ctx, kvt, HD, Ts, H);
+        cache.v_cross[il] = ggml_new_tensor_3d(cache.ctx, kvt, Ts, HD, H);
         if (!cache.k_self[il] || !cache.v_self[il] ||
             !cache.k_cross[il] || !cache.v_cross[il]) {
             err = "kv cache allocation failed at layer " + std::to_string(il);
@@ -1296,7 +1308,8 @@ bool nllb_generate(const nllb_model & model,
     if (params.use_cache) {
         int cap = params.max_new_tokens + 1;
         if (hp.n_ctx > 0 && cap > hp.n_ctx) cap = hp.n_ctx;
-        if (!nllb_kv_cache_init(model, enc, cap, n_threads, cache, err)) return false;
+        if (!nllb_kv_cache_init(model, enc, cap, n_threads, cache, err,
+                                params.kv_type)) return false;
     }
 
     for (int step = 0; step < params.max_new_tokens; ++step) {

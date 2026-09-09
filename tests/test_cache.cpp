@@ -137,13 +137,14 @@ bool run_cached(const nllb_model & model, const nllb_encode_result & enc,
                 const std::vector<int32_t> & ids, int chunk, int n_threads,
                 std::vector<std::vector<float>> & hs_out,   // [L+1][Td*D]
                 std::vector<float> & logits_last,
-                std::string & err, bool reuse_scratch = true) {
+                std::string & err, bool reuse_scratch = true,
+                int kv_type = NLLB_KV_F32) {
     const int Td = (int) ids.size();
     const int D  = model.hp.d_model;
     const int L  = model.hp.n_dec_layer;
 
     nllb_kv_cache cache;
-    if (!nllb_kv_cache_init(model, enc, Td, n_threads, cache, err)) return false;
+    if (!nllb_kv_cache_init(model, enc, Td, n_threads, cache, err, kv_type)) return false;
     cache.reuse_scratch = reuse_scratch;
 
     hs_out.assign((size_t) L + 1, std::vector<float>((size_t) Td * D, 0.0f));
@@ -229,7 +230,15 @@ int main(int argc, char ** argv) {
             "  bit-identical, which the summary reports separately.\n"
             "  --chunk: tokens per cached call in the [chunk] comparison (default 3).\n"
             "           This is what exercises the causal mask's n_past offset; at\n"
-            "           chunk 1 the mask is vacuous and cannot be wrong.\n",
+            "           chunk 1 the mask is vacuous and cannot be wrong.\n"
+            "  --kv-f16: ADD a [kv16] pass - the same single cached call as [full],\n"
+            "           with K and V stored at f16. It is MEASURED, NEVER GATED, and\n"
+            "           the four passes above still run at f32 KV and still carry\n"
+            "           every assertion. That split is the point: [full] must stay\n"
+            "           bit-identical, so red there is a cache bug, while [kv16] can\n"
+            "           only ever be close, because rounding K and V is a precision\n"
+            "           change and asking it for bit-identity would be trap 19 in a\n"
+            "           new costume. Read the two together. Trap 37.\n",
             argv[0]);
         return 2;
     }
@@ -249,6 +258,7 @@ int main(int argc, char ** argv) {
     // "Testing the tests" all still fire - C1 and C4 land three orders above it.
     double ctrl_factor = 4.0;
     bool   verbose    = false;
+    bool   kv_f16     = false;
     for (int i = 3; i < argc; ++i) {
         if      (!std::strcmp(argv[i], "-t")           && i + 1 < argc) n_threads  = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--chunk")      && i + 1 < argc) chunk      = std::atoi(argv[++i]);
@@ -257,6 +267,7 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(argv[i], "--tol")        && i + 1 < argc) tol        = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--logit-tol")  && i + 1 < argc) logit_tol  = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--ctrl-factor") && i + 1 < argc) ctrl_factor = std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--kv-f16"))                     kv_f16     = true;
         else if (!std::strcmp(argv[i], "-v"))                           verbose    = true;
     }
     if (chunk < 1) chunk = 1;
@@ -304,6 +315,9 @@ int main(int argc, char ** argv) {
     double worst_state = 0.0, worst_logit = 0.0, worst_grow = 0.0;
     long   total_ndiff = 0;
     long   arena_ndiff = 0;
+    double worst_kv16  = 0.0;
+    long   kv16_ndiff  = 0;
+    int    n_kv16_cases = 0;
     std::string worst_where;
     double t_uncached = 0.0, t_cached = 0.0;
     int    n_tok_timed = 0;
@@ -468,19 +482,29 @@ int main(int argc, char ** argv) {
         // agnostic, it asserts what the prose already claimed, and it keeps the
         // one assertion that needs no tolerance at all: `full` is bit-identical
         // at any precision, and it still is at f16.
-        enum { P_GROW = 0, P_FULL, P_STEP, P_CHUNK, P_N };
-        struct pass_t { const char * tag; int chunk; bool cached; bool exact; };
+        // [kv16] is the fifth row and it is deliberately the SECOND ungated one.
+        // It runs the identical graph as [full] - one cached call over the whole
+        // prefix - with K and V stored at f16, so the only difference between
+        // the two rows is the rounding of two activations. That makes [full] the
+        // control for [kv16] in the exact sense trap 20 means: [full] contains
+        // no f16 and must be bit-identical, so anything [kv16] has that [full]
+        // does not is the f16 KV cache and nothing else. Gating it would be
+        // trap 19 - a tolerance that encodes a precision, pointed at a different
+        // one. Trap 37.
+        enum { P_GROW = 0, P_FULL, P_STEP, P_CHUNK, P_KVF16, P_N };
+        struct pass_t { const char * tag; int chunk; bool cached; bool exact; int kv; };
         const pass_t passes[P_N] = {
-            { "grow",  0,                   false, false },
-            { "full",  (int) prefix.size(), true,  true  },
-            { "step",  1,                   true,  false },
-            { "chunk", chunk,               true,  false },
+            { "grow",  0,                   false, false, NLLB_KV_F32 },
+            { "full",  (int) prefix.size(), true,  true,  NLLB_KV_F32 },
+            { "step",  1,                   true,  false, NLLB_KV_F32 },
+            { "chunk", chunk,               true,  false, NLLB_KV_F32 },
+            { "kv16",  (int) prefix.size(), true,  false, NLLB_KV_F16 },
         };
 
-        double pass_rel[P_N]   = { 0.0, 0.0, 0.0, 0.0 };
-        long   pass_ndiff[P_N] = { 0, 0, 0, 0 };   // complete count
-        long   pass_cmp[P_N]   = { 0, 0, 0, 0 };   // comparable count, see accumulate()
-        bool   pass_ran[P_N]   = { false, false, false, false };
+        double pass_rel[P_N]   = {};
+        long   pass_ndiff[P_N] = {};   // complete count
+        long   pass_cmp[P_N]   = {};   // comparable count, see accumulate()
+        bool   pass_ran[P_N]   = {};
 
         // Hidden-state rows 0..T-2: the floats every pass computes the same way,
         // and the only population whose counts mean the same thing across all
@@ -498,7 +522,7 @@ int main(int argc, char ** argv) {
             // it to the same absolute tolerance as everything else and duly
             // reported the control as broken on an f16 model, which is a
             // category error: it is the yardstick.
-            const bool gated = (pi != P_GROW);
+            const bool gated = (pi != P_GROW && pi != P_KVF16);
             const double eff_tol = incremental
                 ? std::max(tol, ctrl_factor * pass_rel[P_GROW]) : tol;
             // NOT the control's own logit divergence. `grow`'s last iteration
@@ -514,11 +538,13 @@ int main(int argc, char ** argv) {
             // chunk == 1 or chunk >= T would just repeat step/full.
             if (pi == P_CHUNK &&
                 (pass.chunk <= 1 || pass.chunk >= (int) prefix.size())) continue;
+            if (pi == P_KVF16 && !kv_f16) continue;
 
             std::vector<std::vector<float>> hs;
             std::vector<float> lg;
             const bool ok = pass.cached
-                ? run_cached(model, enc, prefix, pass.chunk, n_threads, hs, lg, err)
+                ? run_cached(model, enc, prefix, pass.chunk, n_threads, hs, lg, err,
+                             /*reuse_scratch=*/true, pass.kv)
                 : run_uncached_growing(model, enc, prefix, src_ids, n_threads, hs, lg, err);
             if (!ok) {
                 std::printf("  %-20s [%s] ERROR %s\n", name.c_str(), pass.tag, err.c_str());
@@ -653,6 +679,11 @@ int main(int argc, char ** argv) {
         }
         total_ndiff += pass_ndiff[P_FULL];
         if (pass_rel[P_GROW] > worst_grow) worst_grow = pass_rel[P_GROW];
+        if (pass_ran[P_KVF16]) {
+            n_kv16_cases++;
+            if (pass_rel[P_KVF16] > worst_kv16) worst_kv16 = pass_rel[P_KVF16];
+            kv16_ndiff += pass_cmp[P_KVF16];
+        }
 
         std::printf("  %-20s T=%-3zu ids=%-4s full=%s step=%.2e chunk=%.2e "
                     "grow=%.2e  %5.0f->%5.0fms (%.1fx)  %s\n",
@@ -663,6 +694,12 @@ int main(int argc, char ** argv) {
                     pass_rel[P_GROW],
                     dt_un, dt_ca, dt_ca > 0.0 ? dt_un / dt_ca : 0.0,
                     case_ok ? "ok" : "FAIL");
+        if (pass_ran[P_KVF16]) {
+            std::printf("  %-20s [kv16] same single cached call, K/V at f16: "
+                        "rel=%.3e  (full=%s)\n",
+                        name.c_str(), pass_rel[P_KVF16],
+                        pass_ndiff[P_FULL] == 0 ? "exact" : "DIFFERS");
+        }
         if (verbose && n_cmp_pop > 0) {
             // Comparable population only - hidden-state rows 0..T-2, logits
             // excluded. Counting everything would put grow at an unfair
@@ -704,6 +741,25 @@ int main(int argc, char ** argv) {
                         "A non-zero count here is\n"
                         "  a cache bug however small it looks. Do not ship on the "
                         "tolerance being green.\n", total_ndiff);
+        }
+        if (n_kv16_cases) {
+            std::printf("[kv16] %d case%s: storing K and V at f16 moves the SAME "
+                        "single cached call by %.3e\n"
+                        "  relative, %ld comparable floats, against [full]'s %ld. "
+                        "This number is MEASURED and\n"
+                        "  NEVER GATED, and it is not a cache defect: [full] above "
+                        "is the control and it is\n"
+                        "  bit-identical, so everything here is the rounding of two "
+                        "activations and nothing else.\n"
+                        "  What it does NOT say is whether any greedy decision "
+                        "changes - K and V ride a residual\n"
+                        "  stream that reaches ~4200 and is never renormalised, and "
+                        "step 7 left only 1.50x of\n"
+                        "  per-decision headroom. Run `nllb-test-precision --kv "
+                        "f32:f16` on the same model to\n"
+                        "  price it in the units that decide the output. Trap 37.\n",
+                        n_kv16_cases, n_kv16_cases == 1 ? "" : "s",
+                        worst_kv16, kv16_ndiff, total_ndiff);
         }
         if (arena_ndiff == 0) {
             std::printf("reusing the graph arena across steps is BIT-IDENTICAL to "

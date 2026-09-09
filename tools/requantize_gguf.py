@@ -73,6 +73,34 @@ READER_SYNTHETIC = {"GGUF.version", "GGUF.tensor_count", "GGUF.kv_count"}
 SKIP_KEYS = WRITER_OWNED | READER_SYNTHETIC
 
 
+# The dominant target type decides general.file_type, the way llama.cpp's
+# MOSTLY_* names do: a mix is not a format, so the key is a label rather than a
+# specification and the tensor types in the file are the truth. ALL_F32 when
+# nothing was quantised at all.
+_FTYPE_FOR = {
+    GGMLQuantizationType.F32:  "ALL_F32",
+    GGMLQuantizationType.F16:  "MOSTLY_F16",
+    GGMLQuantizationType.BF16: "MOSTLY_BF16",
+    GGMLQuantizationType.Q8_0: "MOSTLY_Q8_0",
+    GGMLQuantizationType.Q5_1: "MOSTLY_Q5_1",
+    GGMLQuantizationType.Q5_0: "MOSTLY_Q5_0",
+    GGMLQuantizationType.Q4_1: "MOSTLY_Q4_1",
+    GGMLQuantizationType.Q4_0: "MOSTLY_Q4_0",
+}
+
+
+def _file_type_for(plan):
+    from collections import Counter
+    from gguf import LlamaFileType
+    counts = Counter(to for _, _, to, _ in plan)
+    if not counts:
+        return LlamaFileType.ALL_F32
+    dominant, _ = counts.most_common(1)[0]
+    name = _FTYPE_FOR.get(dominant)
+    return getattr(LlamaFileType, name, LlamaFileType.MOSTLY_Q8_0) if name \
+        else LlamaFileType.MOSTLY_Q8_0
+
+
 def dequant_to_f32(t) -> np.ndarray:
     """Reader tensor -> f32 rows, shape (nrows, n_per_row)."""
     if t.tensor_type in (GGMLQuantizationType.F32, GGMLQuantizationType.F16,
@@ -191,6 +219,20 @@ def main() -> int:
 
     from gguf.constants import GGML_QUANT_VERSION
     writer.add_quantization_version(GGML_QUANT_VERSION)
+
+    # general.file_type. It is in WRITER_OWNED - i.e. excluded from the copy
+    # loop because the writer is supposed to produce it - and for a long time
+    # NOBODY TOLD THE WRITER TO. The output files simply had no file_type, and
+    # the trap-32 assertion above could not see it, because it checks
+    # `set(reader.fields) - SKIP_KEYS` and FILE_TYPE is inside SKIP_KEYS.
+    #
+    # Nothing in src/nllb.cpp reads the key, so no file ever broke - which is
+    # exactly why it survived. Found by diffing the key sets of an input and an
+    # output by hand while writing tools/nllb-quantize.cpp. The lesson is the
+    # one trap 32 already states and this code did not obey: a key you exclude
+    # from a copy because something else owns it is a key you must then check
+    # that something else actually wrote.
+    writer.add_file_type(_file_type_for(plan))
 
     # reader.shape is ne order (n_per_row first); reader.data is already numpy
     # order (nrows, n_per_row), or (nrows, bytes_per_row) for a quantised

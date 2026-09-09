@@ -134,9 +134,10 @@ void report(const char * tag, const run_t & r, int steps) {
 // fault in the model file. Without this the first block of the profile carries
 // ~2 GB of first-touch and its mean runs 30% above its median.
 bool warmup(const nllb_model & model, const nllb_encode_result & enc,
-            int n_warm, int n_threads, int logits_mode, std::string & err) {
+            int n_warm, int n_threads, int logits_mode, std::string & err,
+            int kv_type) {
     nllb_kv_cache cache;
-    if (!nllb_kv_cache_init(model, enc, n_warm + 1, n_threads, cache, err)) return false;
+    if (!nllb_kv_cache_init(model, enc, n_warm + 1, n_threads, cache, err, kv_type)) return false;
     for (int s = 0; s < n_warm; ++s) {
         nllb_decode_result out;
         const std::vector<int32_t> feed(1, 4 + s);
@@ -152,17 +153,26 @@ int main(int argc, char ** argv) {
     if (argc < 2) {
         std::fprintf(stderr,
             "usage: %s <model.gguf> [-t threads] [--src N] [--steps N]\n"
-            "  --src   source length fed to the encoder (default 24)\n"
-            "  --steps cached decode steps to time (default 64)\n",
+            "  --src    source length fed to the encoder (default 24)\n"
+            "  --steps  cached decode steps to time (default 64)\n"
+            "  --kv-f16 store the cached K and V at f16. Halves the cache and the\n"
+            "           bytes self-attention reads per step; on a bandwidth-bound\n"
+            "           machine that is where the saving comes from. It is a much\n"
+            "           SMALLER share of the step than the weights - the lm_head\n"
+            "           alone is 54-65%% - so expect single-digit percent, not a\n"
+            "           multiple. And it costs accuracy: price that with\n"
+            "           nllb-test-precision --kv f32:f16, not here.\n",
             argv[0]);
         return 2;
     }
     const std::string model_path = argv[1];
     int n_threads = 4, n_src = 24, n_steps = 64;
+    int kv_type = NLLB_KV_F32;
     for (int i = 2; i < argc; ++i) {
         if      (!std::strcmp(argv[i], "-t")      && i + 1 < argc) n_threads = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--src")   && i + 1 < argc) n_src     = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--steps") && i + 1 < argc) n_steps   = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--kv-f16"))                kv_type   = NLLB_KV_F16;
     }
 
     nllb_model model;
@@ -232,14 +242,14 @@ int main(int argc, char ** argv) {
     // Page the weights in first. These steps are not timed; without them the
     // timed ones carry the first touch of a 2.3 GB file and the means come out
     // ~30%% above the medians for reasons that have nothing to do with the code.
-    if (!warmup(model, enc, 8, n_threads, NLLB_LOGITS_LAST, err)) {
+    if (!warmup(model, enc, 8, n_threads, NLLB_LOGITS_LAST, err, kv_type)) {
         std::fprintf(stderr, "warm-up failed: %s\n", err.c_str());
         return 2;
     }
     double with_head = 0.0, without_head = 0.0;
     for (const cfg_t & c : cfgs) {
         nllb_kv_cache cache;
-        if (!nllb_kv_cache_init(model, enc, n_steps + 1, n_threads, cache, err)) {
+        if (!nllb_kv_cache_init(model, enc, n_steps + 1, n_threads, cache, err, kv_type)) {
             std::fprintf(stderr, "cache init failed: %s\n", err.c_str());
             return 2;
         }
@@ -294,8 +304,8 @@ int main(int argc, char ** argv) {
                 "(interleaved)\n");
     {
         nllb_kv_cache cold, warm;
-        if (!nllb_kv_cache_init(model, enc, n_steps + 2, n_threads, cold, err) ||
-            !nllb_kv_cache_init(model, enc, n_steps + 2, n_threads, warm, err)) {
+        if (!nllb_kv_cache_init(model, enc, n_steps + 2, n_threads, cold, err, kv_type) ||
+            !nllb_kv_cache_init(model, enc, n_steps + 2, n_threads, warm, err, kv_type)) {
             std::fprintf(stderr, "cache init failed: %s\n", err.c_str());
             return 2;
         }
