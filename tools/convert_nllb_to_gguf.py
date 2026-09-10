@@ -2,13 +2,21 @@
 """
 Convert facebook/nllb-200-distilled-600M (HF M2M100 architecture) to GGUF.
 
-Reads either model.safetensors or pytorch_model.bin (sharded or not).
-safetensors needs no torch; the .bin path imports torch lazily, only if a .bin
-is what you actually have.
+Reads either model.safetensors or pytorch_model.bin (sharded or not). The
+safetensors path parses the container itself - no safetensors package, no
+torch, and f32/f16/**bf16** all work, which matters because bf16 is what most
+fine-tuning runs save and is the one dtype `safe_open(framework="np")` cannot
+return. The .bin path imports torch lazily, only if a .bin is what you have.
 
-    pip install numpy safetensors gguf sentencepiece
+    pip install numpy gguf sentencepiece regex
     python tools/convert_nllb_to_gguf.py models/nllb-600M \
         --outfile models/nllb-600M-f32.gguf --outtype f32
+
+Fine-tunes: everything here comes from config.json, so any M2M100-shaped
+checkpoint converts at whatever depth and width it has. A fine-tune that also
+TRIMMED or REORDERED the vocabulary breaks the merge derivation described under
+load_vocab(); the converter detects that and embeds the merge list instead of
+refusing. See TOKENIZER.md.
 
 Design notes that matter for a from-scratch C++ port:
 
@@ -61,11 +69,44 @@ ARCH = "nllb"
 # checkpoint loading: safetensors or pytorch .bin, sharded or single
 # --------------------------------------------------------------------------
 
+ST_DTYPES = {
+    "F64":  np.dtype("<f8"),
+    "F32":  np.dtype("<f4"),
+    "F16":  np.dtype("<f2"),
+    "I64":  np.dtype("<i8"),
+    "I32":  np.dtype("<i4"),
+    "I16":  np.dtype("<i2"),
+    "I8":   np.dtype("i1"),
+    "U8":   np.dtype("u1"),
+    "BOOL": np.dtype("?"),
+    # BF16 has no numpy equivalent; we widen it by hand. See _st_tensor().
+    "BF16": None,
+}
+
+
+def read_st_header(path: Path) -> tuple[dict, int]:
+    """(header dict, byte offset of the data segment) of a .safetensors file.
+
+    The format is fixed: u64le header length, that many bytes of JSON, then the
+    tensor data. We parse it ourselves rather than going through
+    `safetensors.safe_open(framework="np")` because that call raises
+    `TypeError: data type 'bfloat16' not understood` on any BF16 tensor - and
+    BF16 is what most fine-tuning runs save. Reading the header directly costs
+    us nothing and drops the safetensors dependency entirely.
+    """
+    with open(path, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        if n <= 0 or n > 256 << 20:
+            raise ValueError(f"{path.name}: implausible safetensors header ({n} bytes)")
+        header = json.loads(f.read(n))
+    return header, 8 + n
+
+
 class Checkpoint:
     """Uniform read-only view over an HF checkpoint directory.
 
-    Prefers safetensors (mmap'd, no torch). Falls back to pytorch_model.bin,
-    which is a pickle and therefore needs torch to unpickle.
+    Prefers safetensors (mmap'd, no torch, BF16 included). Falls back to
+    pytorch_model.bin, which is a pickle and therefore needs torch to unpickle.
     """
 
     def __init__(self, model_dir: Path):
@@ -98,11 +139,6 @@ class Checkpoint:
     # -- safetensors --------------------------------------------------------
 
     def _init_safetensors(self, index: Path, single: Path, shards: list[Path]):
-        try:
-            from safetensors import safe_open
-        except ImportError:
-            sys.exit("pip install safetensors")
-        self._safe_open = safe_open
         self.backend = "safetensors"
 
         if index.exists():
@@ -111,9 +147,39 @@ class Checkpoint:
                     self.map[name] = self.dir / shard
             return
         for path in ([single] if single.exists() else shards):
-            with safe_open(path, framework="np") as f:
-                for name in f.keys():
+            header, _ = read_st_header(path)
+            for name in header:
+                if name != "__metadata__":
                     self.map[name] = path
+
+    def _st_tensor(self, path: Path, name: str) -> np.ndarray:
+        """One tensor out of a safetensors shard, as float-ready numpy.
+
+        BF16 is widened to f32 exactly: a bfloat16 IS the top 16 bits of the
+        f32 with the same value, so shifting left by 16 is lossless and needs
+        no rounding decisions. F8 we refuse rather than guess at.
+        """
+        if path not in self._handles:
+            header, data_off = read_st_header(path)
+            self._handles[path] = (header, np.memmap(path, dtype=np.uint8, mode="r"),
+                                   data_off)
+        header, mm, data_off = self._handles[path]
+
+        info = header[name]
+        st_dtype = info["dtype"]
+        if st_dtype not in ST_DTYPES:
+            raise TypeError(
+                f"{name}: safetensors dtype {st_dtype!r} is not supported by "
+                f"this converter. Re-save the checkpoint in f32, f16 or bf16.")
+        beg, end = (data_off + o for o in info["data_offsets"])
+        raw = mm[beg:end]
+
+        if st_dtype == "BF16":
+            u16 = raw.view("<u2")
+            arr = (u16.astype(np.uint32) << 16).view(np.float32)
+        else:
+            arr = raw.view(ST_DTYPES[st_dtype])
+        return arr.reshape(info["shape"])
 
     # -- torch .bin ---------------------------------------------------------
 
@@ -163,10 +229,7 @@ class Checkpoint:
         if self.backend == "safetensors":
             if name not in self.map:
                 raise KeyError(name)
-            path = self.map[name]
-            if path not in self._handles:
-                self._handles[path] = self._safe_open(path, framework="np")
-            return np.asarray(self._handles[path].get_tensor(name))
+            return self._st_tensor(self.map[name], name)
 
         if name not in self.sd:
             raise KeyError(name)
@@ -319,6 +382,9 @@ def load_vocab(model_dir: Path):
     `scores` array this converter has always written. `sentencepiece.bpe.model`
     means what its name says: model_type == BPE, and the scores are negated
     merge ranks rather than log-probabilities. Nothing reads them today.
+
+    `merges_list`, when present, means the merge derivation does not apply to
+    this vocabulary and main() must write the list into the GGUF.
     """
     tok_json = model_dir / "tokenizer.json"
     spm_file = model_dir / "sentencepiece.bpe.model"
@@ -401,17 +467,36 @@ def load_vocab(model_dir: Path):
         # tokenizer.json was built by a transformers version whose extractor
         # orders splits differently, the C++ refuses to load instead of
         # tokenizing subtly differently for the rest of its life.
+        if tj["model"]["type"] != "BPE":
+            raise SystemExit(
+                f"tokenizer.json is a {tj['model']['type']} model; nllb_vocab "
+                "implements BPE only.")
         hf_merges = [m if isinstance(m, str) else " ".join(m)
                      for m in tj["model"]["merges"]]
-        derived = derive_merges(tokens)
-        if derived != hf_merges:
-            raise SystemExit(
-                f"derive_merges() reproduced {len(derived)} merges but "
-                f"tokenizer.json has {len(hf_merges)} and they differ. The C++ "
-                "tokenizer derives merges from the vocab order and would be "
-                "wrong on this checkpoint. Do not ship this GGUF.")
         meta["merges_hash"] = fnv1a64(hf_merges)
         meta["n_merges"] = len(hf_merges)
+
+        meta["merges"] = hf_merges          # only WRITTEN if --embed-merges
+
+        derived = derive_merges(tokens)
+        if derived == hf_merges:
+            meta["merges_hash_source"] = "tokenizer.json"
+        else:
+            # A vocabulary that was trimmed or extended after training - which
+            # is what most language-specific fine-tunes do - reindexes the
+            # pieces, and HF keeps the ORIGINAL merge order filtered rather
+            # than re-deriving. The derivation is then simply not applicable to
+            # this checkpoint, which is a different thing from the checkpoint
+            # being broken. So carry the list (~6 MB on a full vocab, less on a
+            # trimmed one) and let the C++ use it verbatim; merges_hash still
+            # covers it, it just now checks a transfer rather than a
+            # derivation.
+            print(f"  ! derivation does not apply to this vocabulary "
+                  f"({len(derived)} derived vs {len(hf_merges)} in "
+                  f"tokenizer.json); embedding the merge list instead",
+                  file=sys.stderr)
+            meta["merges_list"] = hf_merges
+            meta["merges_hash_source"] = "tokenizer.json (embedded list)"
         return tokens, scores, toktypes, meta
 
     if not spm_file.exists():
@@ -484,6 +569,7 @@ def load_vocab(model_dir: Path):
     return tokens, scores, toktypes, {
         "source": "sentencepiece.bpe.model",
         "charsmap": charsmap,
+        "merges": derived,
         "merges_hash": fnv1a64(derived),
         "merges_hash_source": "derived (unverified)",
         "n_merges": len(derived),
@@ -550,6 +636,11 @@ def main() -> int:
     ap.add_argument("--encoder-only", action="store_true",
                     help="skip decoder tensors - smaller file for milestone 1")
     ap.add_argument("--no-tokenizer", action="store_true")
+    ap.add_argument("--embed-merges", action="store_true",
+                    help="write the merge list into the GGUF even when the C++ "
+                         "could derive it from the vocab order (~6 MB, saves "
+                         "~0.4 s of load time). A vocabulary the derivation "
+                         "does not fit embeds the list regardless.")
     ap.add_argument("--name", default=None)
     args = ap.parse_args()
 
@@ -660,6 +751,20 @@ def main() -> int:
 
             # The merges are DERIVED on the C++ side from the vocab order; this
             # is the hash that makes that derivation a checked invariant.
+            # When the derivation does not reproduce this checkpoint's list -
+            # or when --embed-merges says so - the list itself goes in the file
+            # and the C++ prefers it, with the same hash checking the transfer.
+            merges_list = meta.get("merges_list")
+            if merges_list is None and args.embed_merges and "merges" in meta:
+                merges_list = meta["merges"]
+            if merges_list is not None:
+                w.add_array(f"tokenizer.{ARCH}.merges", merges_list)
+                if not meta.get("merges_hash_source", "").endswith("list)"):
+                    meta["merges_hash_source"] = \
+                        meta.get("merges_hash_source", "tokenizer.json") + \
+                        " (embedded list)"
+                print(f"  merges: {len(merges_list)} embedded "
+                      f"({sum(len(m) + 1 for m in merges_list) / 1e6:.1f} MB)")
             w.add_uint64(f"tokenizer.{ARCH}.merges_hash", meta["merges_hash"])
             w.add_uint32(f"tokenizer.{ARCH}.n_merges", meta["n_merges"])
             w.add_string(f"tokenizer.{ARCH}.merges_hash_source",

@@ -519,33 +519,83 @@ bool nllb_vocab_load_from_gguf(const gguf_context * g, nllb_vocab & v,
     uint64_t hash = 0xCBF29CE484222325ull;
     uint32_t rank = 0;
     v.merges.reserve(n * 3);            // ~2 merges per piece on the real vocab
-    std::vector<std::pair<int32_t, int32_t>> local;
-    for (size_t id = 0; id < n; id++) {
-        const std::string & piece = v.tokens[id];
-        const std::string_view pv(piece);
-        local.clear();
-        for (size_t i = 1; i < piece.size(); i++) {
-            if (((unsigned char) piece[i] & 0xC0) == 0x80) continue; // mid-char
-            const int32_t l = view_id(pv.substr(0, i));
-            if (l < 0) continue;
-            const int32_t r = view_id(pv.substr(i));
-            if (r < 0) continue;
-            local.emplace_back(l, r);
+
+    // A vocabulary that was trimmed or extended after training - which is what
+    // a language-specific fine-tune usually does - reindexes the pieces, and
+    // the merge order HuggingFace kept is then no longer a function of that
+    // order. The converter notices and writes the list; if it is here it wins,
+    // and merges_hash below checks the transfer instead of the derivation.
+    const int64_t k_ml = gguf_find_key(g, "tokenizer.nllb.merges");
+    if (k_ml >= 0) {
+        if (gguf_get_arr_type(g, k_ml) != GGUF_TYPE_STRING) {
+            err = "tokenizer.nllb.merges is not a string array";
+            return false;
         }
-        std::sort(local.begin(), local.end());
-        for (const auto & lr : local) {
+        const size_t nm = gguf_get_arr_n(g, k_ml);
+        v.merges.reserve(nm);
+        for (size_t i = 0; i < nm; i++) {
+            const std::string m = gguf_get_arr_str(g, k_ml, i);
+
+            // "left right". A piece can in principle contain a space, so take
+            // the split that resolves rather than assuming the first one does.
+            int32_t l = -1, r = -1;
+            for (size_t sp = m.find(' '); sp != std::string::npos;
+                 sp = m.find(' ', sp + 1)) {
+                const int32_t a = view_id(std::string_view(m).substr(0, sp));
+                if (a < 0) continue;
+                const int32_t b = view_id(std::string_view(m).substr(sp + 1));
+                if (b < 0) continue;
+                l = a; r = b;
+                break;
+            }
+            if (l < 0) {
+                err = "merge " + std::to_string(i) + " ('" + m + "') has a half "
+                      "that is not in this vocabulary";
+                return false;
+            }
+            const int32_t merged = view_id(v.tokens[l] + v.tokens[r]);
+            if (merged < 0) {
+                err = "merge " + std::to_string(i) + " ('" + m + "') produces a "
+                      "piece that is not in this vocabulary";
+                return false;
+            }
             if (rank) { hash ^= 0x0A; hash *= 0x100000001B3ull; }
-            const std::string & ls = v.tokens[lr.first];
-            const std::string & rs = v.tokens[lr.second];
-            fnv1a(hash, ls.data(), ls.size());
-            const char sp = ' ';
-            fnv1a(hash, &sp, 1);
-            fnv1a(hash, rs.data(), rs.size());
+            fnv1a(hash, m.data(), m.size());
 
             // Last one wins, matching BpeBuilder::build()'s HashMap::insert.
-            v.merges[pair_key(lr.first, lr.second)] =
-                nllb_vocab::merge{rank, (int32_t) id};
+            v.merges[pair_key(l, r)] = nllb_vocab::merge{rank, merged};
             rank++;
+        }
+        v.merges_from_file = true;
+    } else {
+        std::vector<std::pair<int32_t, int32_t>> local;
+        for (size_t id = 0; id < n; id++) {
+            const std::string & piece = v.tokens[id];
+            const std::string_view pv(piece);
+            local.clear();
+            for (size_t i = 1; i < piece.size(); i++) {
+                if (((unsigned char) piece[i] & 0xC0) == 0x80) continue; // mid-char
+                const int32_t l = view_id(pv.substr(0, i));
+                if (l < 0) continue;
+                const int32_t r = view_id(pv.substr(i));
+                if (r < 0) continue;
+                local.emplace_back(l, r);
+            }
+            std::sort(local.begin(), local.end());
+            for (const auto & lr : local) {
+                if (rank) { hash ^= 0x0A; hash *= 0x100000001B3ull; }
+                const std::string & ls = v.tokens[lr.first];
+                const std::string & rs = v.tokens[lr.second];
+                fnv1a(hash, ls.data(), ls.size());
+                const char sp = ' ';
+                fnv1a(hash, &sp, 1);
+                fnv1a(hash, rs.data(), rs.size());
+
+                // Last one wins, matching BpeBuilder::build()'s HashMap::insert.
+                v.merges[pair_key(lr.first, lr.second)] =
+                    nllb_vocab::merge{rank, (int32_t) id};
+                rank++;
+            }
         }
     }
     v.n_merges = rank;
@@ -558,17 +608,23 @@ bool nllb_vocab_load_from_gguf(const gguf_context * g, nllb_vocab & v,
     }
     v.merges_hash = gguf_get_val_u64(g, k_h);
     if (v.merges_hash != hash) {
-        char buf[320];
+        char buf[400];
         snprintf(buf, sizeof(buf),
-                 "merge derivation mismatch: rebuilt %u merges hashing to "
-                 "0x%016llx, GGUF says 0x%016llx (%s). The vocabulary order in "
-                 "this file does not reproduce the merge list HuggingFace "
-                 "serialised, so BPE here would not match the reference. "
-                 "Refusing to load.",
+                 "merge %s mismatch: %u merges hashing to 0x%016llx, GGUF says "
+                 "0x%016llx (%s). %s Refusing to load.",
+                 v.merges_from_file ? "list" : "derivation",
                  rank, (unsigned long long) hash,
                  (unsigned long long) v.merges_hash,
                  v.merges_hash_source.empty() ? "unknown source"
-                                              : v.merges_hash_source.c_str());
+                                              : v.merges_hash_source.c_str(),
+                 v.merges_from_file
+                     ? "tokenizer.nllb.merges does not hash to what the "
+                       "converter wrote, so this file is damaged."
+                     : "The vocabulary order in this file does not reproduce "
+                       "the merge list HuggingFace serialised, so BPE here "
+                       "would not match the reference. Re-run "
+                       "tools/convert_nllb_to_gguf.py, which embeds the list "
+                       "when the derivation does not fit the vocabulary.");
         err = buf;
         return false;
     }
