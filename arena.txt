@@ -1,0 +1,1331 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.025 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M1)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple7  (1007)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  =  5726.63 MB
+ggml_metal_init: allocating
+ggml_metal_init: found device: Apple M1
+ggml_metal_init: picking default device: Apple M1
+ggml_metal_init: use fusion         = true
+ggml_metal_init: use concurrency    = true
+ggml_metal_init: use graph optimize = true
+ggml_metal_log_allocated_size: allocated buffer, size =  1184.31 MiB, ( 1184.69 /  5461.34)
+[arena] encoder          nodes   451  splits  1  compute  MTL0 0.16 MiB  CPU 0.00 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_get_rows_f16', name = 'kernel_get_rows_f16'
+ggml_metal_library_compile_pipeline: loaded kernel_get_rows_f16                           0x100ba0590 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_get_rows_f32', name = 'kernel_get_rows_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_get_rows_f32                           0x100ba0d90 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=10_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=10_cnt=1            0x100ba1890 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=0_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=0_cb=0      0x100ba2710 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_norm_mul_add_f32_4', name = 'kernel_norm_mul_add_f32_4'
+ggml_metal_library_compile_pipeline: loaded kernel_norm_mul_add_f32_4                     0x100ba1b90 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f16_f32_r1_3', name = 'kernel_mul_mv_ext_f16_f32_r1_3_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f16_f32_r1_3_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0x100ba3210 | th_max =  832 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0      0x100ba3810 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_cpy_f32_f32', name = 'kernel_cpy_f32_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_cpy_f32_f32                            0x9fd244000 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_f32_f32_4', name = 'kernel_mul_mv_f32_f32_4_nsg=1_ne12=16_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_f32_f32_4_nsg=1_ne12=16_r2=1_r3=1      0x9fd244300 | th_max =  768 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_soft_max_f32', name = 'kernel_soft_max_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_soft_max_f32                           0x9fd244600 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_f32_f32_short', name = 'kernel_mul_mv_f32_f32_short_nsg=1_ne12=16_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_f32_f32_short_nsg=1_ne12=16_r2=1_r3=1      0x9fd244900 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=101_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=101_cnt=1           0x9fd244c00 | th_max = 1024 | th_width =   32
+[arena] decoder          nodes   800  splits 25  compute  MTL0 0.98 MiB  CPU 0.02 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_f16_f32_4', name = 'kernel_mul_mv_f16_f32_4_nsg=4_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_f16_f32_4_nsg=4_ne12=1_r2=1_r3=1      0x9fd244f00 | th_max = 1024 | th_width =   32
+[arena] decoder          nodes   802  splits 25  compute  MTL0 0.99 MiB  CPU 0.02 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f16_f32_r1_2', name = 'kernel_mul_mv_ext_f16_f32_r1_2_nsg=2_nxpsg=16_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f16_f32_r1_2_nsg=2_nxpsg=16_ne12=1_r2=1_r3=1      0x9fd245200 | th_max =  896 | th_width =   32
+[arena] decoder          nodes   802  splits 25  compute  MTL0 0.99 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.00 MiB  CPU 0.02 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f16_f32_r1_4', name = 'kernel_mul_mv_ext_f16_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f16_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0x9fd245500 | th_max =  832 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_soft_max_f32_4', name = 'kernel_soft_max_f32_4'
+ggml_metal_library_compile_pipeline: loaded kernel_soft_max_f32_4                         0x9fd245800 | th_max = 1024 | th_width =   32
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.00 MiB  CPU 0.02 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f16_f32_r1_5', name = 'kernel_mul_mv_ext_f16_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f16_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0x9fd245b00 | th_max =  768 | th_width =   32
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.00 MiB  CPU 0.02 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 1.00 MiB  CPU 0.02 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.00 MiB  CPU 0.02 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 1.00 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.36 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 1.62 MiB  CPU 0.02 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mm_f16_f32', name = 'kernel_mul_mm_f16_f32_bci=0_bco=1_ne12=1_ne13=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mm_f16_f32_bci=0_bco=1_ne12=1_ne13=1_r2=1_r3=1      0x9fd245e00 | th_max =  896 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mm_f32_f32', name = 'kernel_mul_mm_f32_f32_bci=0_bco=1_ne12=16_ne13=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mm_f32_f32_bci=0_bco=1_ne12=16_ne13=1_r2=1_r3=1      0x9fd246100 | th_max =  832 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=101_cnt=0'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=101_cnt=0           0x9fd246400 | th_max = 1024 | th_width =   32
+[arena] decoder          nodes   800  splits 25  compute  MTL0 1.63 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.63 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.63 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.63 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.63 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.65 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.65 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.66 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.73 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.74 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.75 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.77 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.88 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.90 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.92 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.94 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.94 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 1.94 MiB  CPU 0.06 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 1.94 MiB  CPU 0.06 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 1.94 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 1.94 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 2.02 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.20 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.25 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 2.69 MiB  CPU 0.06 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=10_cnt=0'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=10_cnt=0            0x9fd246700 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_f32_f32', name = 'kernel_mul_mv_f32_f32_nsg=1_ne12=16_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_f32_f32_nsg=1_ne12=16_r2=1_r3=1      0x9fd246a00 | th_max = 1024 | th_width =   32
+[arena] decoder          nodes   800  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.76 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.81 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.81 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.82 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.82 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.82 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.83 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.98 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 3.99 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.00 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.02 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.03 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.04 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.05 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.06 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.07 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.30 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.32 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.34 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.36 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.38 MiB  CPU 0.14 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mm_f16_f32', name = 'kernel_mul_mm_f16_f32_bci=0_bco=0_ne12=1_ne13=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mm_f16_f32_bci=0_bco=0_ne12=1_ne13=1_r2=1_r3=1      0x9fd246d00 | th_max = 1024 | th_width =   32
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.40 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.42 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.44 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.46 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.48 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.49 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.51 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.53 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.55 MiB  CPU 0.14 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.57 MiB  CPU 0.15 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.59 MiB  CPU 0.15 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.61 MiB  CPU 0.16 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.63 MiB  CPU 0.17 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.65 MiB  CPU 0.17 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.67 MiB  CPU 0.18 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.69 MiB  CPU 0.18 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.71 MiB  CPU 0.19 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.73 MiB  CPU 0.20 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.75 MiB  CPU 0.21 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.77 MiB  CPU 0.21 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.79 MiB  CPU 0.22 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.81 MiB  CPU 0.23 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.82 MiB  CPU 0.23 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.84 MiB  CPU 0.24 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 4.86 MiB  CPU 0.25 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mm_f32_f32', name = 'kernel_mul_mm_f32_f32_bci=0_bco=0_ne12=16_ne13=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mm_f32_f32_bci=0_bco=0_ne12=16_ne13=1_r2=1_r3=1      0x9fd247000 | th_max =  896 | th_width =   32
+[arena] encoder          nodes   451  splits  1  compute  MTL0 4.86 MiB  CPU 0.25 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 4.86 MiB  CPU 0.25 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 4.86 MiB  CPU 0.25 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mm_f32_f32', name = 'kernel_mul_mm_f32_f32_bci=1_bco=1_ne12=16_ne13=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mm_f32_f32_bci=1_bco=1_ne12=16_ne13=1_r2=1_r3=1      0x9fd247300 | th_max =  896 | th_width =   32
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.39 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 4.59 MiB  CPU 0.02 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 3.12 MiB  CPU 0.01 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.69 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.91 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 0.99 MiB  CPU 0.00 MiB
+[arena] encoder          nodes   451  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   800  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] decoder          nodes   802  splits 25  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.85 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   718  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.14 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cross-kv build   nodes   120  splits  1  compute  MTL0 5.61 MiB  CPU 0.26 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+[arena] cached step      nodes   716  splits  1  compute  MTL0 1.03 MiB  CPU 0.00 MiB
+ggml_metal_free: deallocating

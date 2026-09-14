@@ -204,7 +204,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
             "usage: %s <reference.gguf> <candidate.gguf> <ref-dir> [-t threads]\n"
             "       [--forced-bos ID] [--max-new N] [--strict] [-v]\n"
-            "       [--allow-id-drift] [--topk K] [--kv f32:f16]\n"
+            "       [--allow-id-drift] [--topk K] [--kv f32:f16] [--backend A:B]\n"
             "  Both files must be the SAME model converted at different\n"
             "  precisions - typically f32 and f16. The reference is whichever\n"
             "  one the project trusts; the candidate is the one being argued for.\n"
@@ -224,7 +224,12 @@ int main(int argc, char ** argv) {
             "                    constant and the cache is the variable. The\n"
             "                    teacher-forced logits then come from the CACHED\n"
             "                    decoder on both sides, because the un-cached one\n"
-            "                    has no KV cache to be f16.\n",
+            "                    has no KV cache to be f16.\n"
+            "  --backend A:B     backend for reference:candidate (step 13), e.g.\n"
+            "                    cpu:metal. PASS THE SAME FILE TWICE: the weights\n"
+            "                    are the constant and the KERNELS are the variable.\n"
+            "                    This is the cross-backend gate - exact ids plus\n"
+            "                    the margin audit, the same claim f16 makes.\n",
             argv[0]);
         return 2;
     }
@@ -241,6 +246,7 @@ int main(int argc, char ** argv) {
     bool verbose    = false;
     bool allow_drift = false;
     int  kv_ref = NLLB_KV_F32, kv_cand = NLLB_KV_F32;
+    std::string be_ref, be_cand;   // "" -> $NLLB_BACKEND, else cpu
     for (int i = 4; i < argc; ++i) {
         if      (!std::strcmp(argv[i], "-t")           && i + 1 < argc) n_threads  = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--forced-bos") && i + 1 < argc) forced_bos = std::atoi(argv[++i]);
@@ -249,6 +255,16 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(argv[i], "--allow-id-drift"))             allow_drift = true;
         else if (!std::strcmp(argv[i], "--strict"))                     strict     = true;
         else if (!std::strcmp(argv[i], "-v"))                           verbose    = true;
+        else if (!std::strcmp(argv[i], "--backend")    && i + 1 < argc) {
+            const std::string spec = argv[++i];
+            const size_t colon = spec.find(':');
+            if (colon == std::string::npos) {
+                std::fprintf(stderr, "--backend wants A:B, e.g. cpu:metal, got %s\n", spec.c_str());
+                return 2;
+            }
+            be_ref  = spec.substr(0, colon);
+            be_cand = spec.substr(colon + 1);
+        }
         else if (!std::strcmp(argv[i], "--kv")         && i + 1 < argc) {
             const std::string spec = argv[++i];
             const size_t colon = spec.find(':');
@@ -275,11 +291,11 @@ int main(int argc, char ** argv) {
 
     nllb_model ref, cand;
     std::string err;
-    if (!nllb_model_load(ref_path, ref, err)) {
+    if (!nllb_model_load(ref_path, ref, err, true, be_ref)) {
         std::fprintf(stderr, "load failed (reference): %s\n", err.c_str());
         return 2;
     }
-    if (!nllb_model_load(cand_path, cand, err)) {
+    if (!nllb_model_load(cand_path, cand, err, true, be_cand)) {
         std::fprintf(stderr, "load failed (candidate): %s\n", err.c_str());
         return 2;
     }
@@ -291,11 +307,23 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 2;
     }
-    if (std::strcmp(head_type(ref), head_type(cand)) == 0 && !kv_compare) {
+    // Two backends that resolved to the same device would be the same code on
+    // the same bytes - vacuous, and the step-4 SKIP lesson says a vacuous
+    // comparison must not print PASS.
+    const bool be_compare = ref.backend_name != cand.backend_name;
+    if (!be_ref.empty() && !be_compare) {
+        std::fprintf(stderr,
+            "--backend %s:%s resolved to %s on both sides, so there is nothing to\n"
+            "compare. (Is the GPU backend in this build? nllb-cli --list-backends)\n",
+            be_ref.c_str(), be_cand.c_str(), ref.backend_name.c_str());
+        return 2;
+    }
+    if (std::strcmp(head_type(ref), head_type(cand)) == 0 && !kv_compare && !be_compare) {
         std::fprintf(stderr,
             "both files store the lm_head as %s and --kv is f32:f32, so this\n"
             "comparison has nothing to measure. Convert one with --outtype f16,\n"
-            "or pass --kv f32:f16 to measure the CACHE's precision instead.\n",
+            "pass --kv f32:f16 to measure the CACHE's precision, or --backend\n"
+            "cpu:metal to measure the KERNELS.\n",
             head_type(ref));
         return 2;
     }
@@ -305,12 +333,12 @@ int main(int argc, char ** argv) {
     const int n_vocab = (int) ref.lm_head()->ne[1];
 
     const char * kv_name[2] = { "f32", "f16" };
-    std::printf("reference: %s (lm_head %s, KV %s)\n"
-                "candidate: %s (lm_head %s, KV %s)\n"
+    std::printf("reference: %s (lm_head %s, KV %s, backend %s)\n"
+                "candidate: %s (lm_head %s, KV %s, backend %s)\n"
                 "model: d_model=%d dec_layers=%d dec_heads=%d vocab=%d\n"
                 "teacher-forced logits from: %s\n\n",
-                ref_path.c_str(),  head_type(ref),  kv_name[kv_ref],
-                cand_path.c_str(), head_type(cand), kv_name[kv_cand],
+                ref_path.c_str(),  head_type(ref),  kv_name[kv_ref],  ref.backend_name.c_str(),
+                cand_path.c_str(), head_type(cand), kv_name[kv_cand], cand.backend_name.c_str(),
                 D, L, ref.hp.n_dec_head, n_vocab,
                 kv_compare ? "nllb_decode_cached (both sides - --kv differs)"
                            : "nllb_decode, un-cached (the historical path)");

@@ -68,6 +68,7 @@ void usage(const char * argv0) {
     std::fprintf(stderr,
         "usage: %s -m <model.gguf> [--src CODE] --tgt CODE [text]\n"
         "       %s -m <model.gguf> --list-langs\n"
+        "       %s --list-backends\n"
         "\n"
         "  -m, --model PATH      GGUF converted by tools/convert_nllb_to_gguf.py.\n"
         "                        It must carry the tokenizer (converted at step 8\n"
@@ -79,7 +80,17 @@ void usage(const char * argv0) {
         "  -n, --max-new-tokens  cap on generated tokens (default %d). HF counts\n"
         "                        this from the decoder start token, so the id\n"
         "                        sequence is at most 1 + n long.\n"
-        "  -t, --threads N       (default %d)\n"
+        "  -t, --threads N       (default %d). CPU threads: the whole run on the\n"
+        "                        CPU backend, only fallback ops on a GPU backend.\n"
+        "  -b, --backend NAME    where the graphs run (default auto):\n"
+        "                          auto   the GPU if this build has one, else CPU\n"
+        "                          metal  Metal; FAILS rather than fall back\n"
+        "                          cpu    ggml's CPU backend - the reference, and\n"
+        "                                 bit-identical to every pre-step-13 build\n"
+        "                          or a device name from --list-backends\n"
+        "                        On a GPU backend, ops it does not implement run\n"
+        "                        on the CPU automatically (-v says how many splits).\n"
+        "      --list-backends   print the devices this build can run on and exit\n"
         "      --no-mmap         read the weights onto the heap instead of\n"
         "                        mapping the file. Identical output either way\n"
         "                        (nllb-test-mmap asserts it); the trade is a\n"
@@ -101,7 +112,7 @@ void usage(const char * argv0) {
         "With no [text] argument, reads stdin and translates ONE LINE AT A TIME,\n"
         "writing one line of output per line of input. Pass \"\" to translate the\n"
         "empty string. Only the translation goes to stdout.\n",
-        argv0, argv0, 256, 4);
+        argv0, argv0, argv0, 256, 4);
 }
 
 // One line of input -> one line of output. Everything that can go wrong here
@@ -179,6 +190,11 @@ int main(int argc, char ** argv) {
     bool list_langs = false;
     bool verbose    = false;
     bool use_mmap   = true;
+    bool list_backends = false;
+    // "auto", the opposite of the library's "cpu" default and for the same
+    // reason use_cache differs: the library default is the configuration the
+    // gates were measured on, and the product should use the GPU it has.
+    std::string backend = "auto";
     bool kv_f16     = false;  // an arithmetic change, so it is opt-in. See the
                               // note on nllb_kv_type in src/nllb.h.
     bool use_cache  = true;   // see the note by nllb_generate_params::use_cache:
@@ -204,6 +220,8 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(a, "-t") || !std::strcmp(a, "--threads")) n_threads = std::atoi(need(a));
         else if (!std::strcmp(a, "-n") || !std::strcmp(a, "--max-new-tokens")) max_new = std::atoi(need(a));
         else if (!std::strcmp(a, "--no-mmap"))                         use_mmap   = false;
+        else if (!std::strcmp(a, "-b") || !std::strcmp(a, "--backend")) backend   = need(a);
+        else if (!std::strcmp(a, "--list-backends"))                   list_backends = true;
         else if (!std::strcmp(a, "--no-cache"))                        use_cache  = false;
         else if (!std::strcmp(a, "--kv-f16"))                          kv_f16     = true;
         else if (!std::strcmp(a, "--list-langs"))                      list_langs = true;
@@ -228,6 +246,10 @@ int main(int argc, char ** argv) {
         }
     }
 
+    if (list_backends) {
+        for (const std::string & d : nllb_list_backends()) std::printf("%s\n", d.c_str());
+        return 0;
+    }
     if (model_path.empty()) { usage(argv[0]); return 2; }
     if (n_threads < 1)      { std::fprintf(stderr, "--threads must be >= 1\n"); return 2; }
     if (max_new   < 1)      { std::fprintf(stderr, "--max-new-tokens must be >= 1\n"); return 2; }
@@ -258,7 +280,7 @@ int main(int argc, char ** argv) {
     const double t_load0 = now_ms();
 
     nllb_model model;
-    if (!nllb_model_load(model_path, model, err, use_mmap)) {
+    if (!nllb_model_load(model_path, model, err, use_mmap, backend)) {
         std::fprintf(stderr, "model load failed: %s\n", err.c_str());
         return 2;
     }
@@ -311,7 +333,8 @@ int main(int argc, char ** argv) {
             "lm_head=%s\n"
             "vocab:  %zu tokens, %u merges, grapheme tables from %s%s%s\n"
             "run:    %s (%d) -> %s (%d) | max_new=%d | cache %s | %d threads\n"
-            "load:   %.1f ms (weights %s)\n",
+            "load:   %.1f ms (weights %s, %s)\n"
+            "backend: %s%s\n",
             model_path.c_str(),
             model.hp.d_model, model.hp.n_layer, model.hp.n_dec_layer,
             model.hp.n_head, model.hp.n_dec_head, model.hp.n_vocab,
@@ -324,7 +347,10 @@ int main(int argc, char ** argv) {
             max_new,
             use_cache ? (kv_f16 ? "on (KV f16)" : "on (KV f32)") : "off",
             n_threads, t_load,
-            model.mapped ? "mmap'ed" : "read");
+            model.mapped ? "mmap'ed" : "read",
+            model.weights_host_ptr ? "zero-copy in the backend buffer" : "copied to the backend",
+            model.backend_name.c_str(),
+            model.on_cpu ? "" : " (CPU fallback for unsupported ops)");
     }
 
     nllb_generate_params base;

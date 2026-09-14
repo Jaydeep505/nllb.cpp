@@ -28,12 +28,14 @@
 #include "nllb.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "gguf.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -86,7 +88,10 @@ int main(int argc, char ** argv) {
         for (int64_t i = 0; i < gguf_get_n_tensors(mapped.gguf); ++i) {
             ggml_tensor * t = ggml_get_tensor(mapped.ctx_w,
                                               gguf_get_tensor_name(mapped.gguf, i));
-            if (!t || !t->data) continue;
+            // Host pointers only when the backend buffer WRAPS the mapping
+            // (step 13): true on the CPU and on Metal, and then ->data is the
+            // address inside the mapping. Anything else is a device handle.
+            if (!t || !t->data || !mapped.weights_host_ptr) continue;
             const unsigned char * p = (const unsigned char *) t->data;
             const size_t nb = ggml_nbytes(t);
             for (size_t off = 0; off < nb; off += (size_t) page) sink ^= p[off];
@@ -105,6 +110,9 @@ int main(int argc, char ** argv) {
     const double t_read = now_ms() - t1;
 
     std::printf("model:  %s\n", path.c_str());
+    std::printf("backend: %s (weights %s)\n", mapped.backend_name.c_str(),
+                mapped.weights_host_ptr ? "zero-copy: the backend buffer wraps the mapping"
+                                        : "copied");
     std::printf("mapped: %s\n\n",
                 mapped.mapped ? "yes" : "NO - fell back to read, see below");
 
@@ -142,12 +150,18 @@ int main(int argc, char ** argv) {
         }
         const size_t nb = ggml_nbytes(a);
         total += nb;
-        if (std::memcmp(a->data, b->data, nb) != 0) {
+        // Through the backend, not through ->data: since step 13 the read
+        // path copies the weights into a backend buffer, which on a GPU is
+        // device memory that the host cannot dereference.
+        std::vector<unsigned char> va(nb), vb(nb);
+        ggml_backend_tensor_get(a, va.data(), 0, nb);
+        ggml_backend_tensor_get(b, vb.data(), 0, nb);
+        if (std::memcmp(va.data(), vb.data(), nb) != 0) {
             // Locate the first differing byte: an offset error usually puts it
             // at 0, a size error near the end.
             size_t k = 0;
-            const unsigned char * pa = (const unsigned char *) a->data;
-            const unsigned char * pb = (const unsigned char *) b->data;
+            const unsigned char * pa = va.data();
+            const unsigned char * pb = vb.data();
             while (k < nb && pa[k] == pb[k]) ++k;
             std::printf("  %-40s DIFFERS at byte %zu of %zu (%s)\n",
                         name, k, nb,

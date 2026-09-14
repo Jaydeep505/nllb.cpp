@@ -107,7 +107,7 @@ struct run_t {
 void report(const char * tag, const run_t & r, int steps) {
     const double t = r.typical();
     auto pct = [&](double x) { return t > 0.0 ? 100.0 * x / t : 0.0; };
-    std::printf("  %-14s %7.2f ms/step (median)   arena %.0f MiB, %d nodes, "
+    std::printf("  %-14s %7.2f ms/step (median)   arena %.2f MiB, %d nodes, "
                 "%ld minor faults/step\n",
                 tag, t, (double) r.arena / (1024.0 * 1024.0), r.nodes,
                 steps ? r.faults / steps : 0);
@@ -253,9 +253,13 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr, "cache init failed: %s\n", err.c_str());
             return 2;
         }
-        // The step-5 baseline: a fresh arena every step. Section [2] prices
-        // the alternative; this section has to be the code as it stood.
-        cache.reuse_scratch = false;
+        // The code as it ships: the step allocator reused across steps. Until
+        // step 13 this section ran with a fresh arena per step, because that
+        // was the step-5 baseline; since the port the reused ggml_backend_sched
+        // IS the code, and a fresh one per step is a test configuration (the
+        // [arena] pass) that costs more than a fresh bump arena did - it builds
+        // the scheduler's hash sets every step. Section [2] prices the two.
+        cache.reuse_scratch = true;
         run_t r;
         const long f0 = minor_faults();
         for (int s = 0; s < n_steps; ++s) {
