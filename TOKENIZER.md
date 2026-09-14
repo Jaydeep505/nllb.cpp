@@ -159,6 +159,27 @@ merges itself, hashes those, and records
 `merges_hash_source = "derived (unverified)"` — the check degrades to
 self-consistency and says so in the gate's banner rather than pretending.
 
+### When the derivation does not fit the vocabulary
+
+The derivation is a property of `facebook/nllb-200-*`, not of BPE. A
+**language-specific fine-tune that trims or reorders the vocabulary** — the
+usual way to shrink a 256204-piece embedding matrix down to one language pair —
+reindexes the pieces while HuggingFace keeps the original merge ORDER, filtered.
+The derivation is then not wrong, it is inapplicable, which is a different thing
+from a broken checkpoint and deserves a different answer than refusing.
+
+So the converter compares, and on a mismatch writes `tokenizer.nllb.merges` —
+the list itself, as HuggingFace serialised it. `nllb_vocab_load` prefers that
+key when it is present and derives only in its absence; `merges_hash` still
+covers the result, checking a transfer instead of a derivation, and
+`merges_hash_source` says which of the two happened. `--embed-merges` forces the
+list into a file whose derivation *would* have worked, trading ~6 MB of GGUF for
+the ~0.4 s the derivation costs at load.
+
+A vocabulary that survives trimming unchanged in ORDER still derives, because
+filtering preserves relative id order; it is reordering and insertion that need
+the list.
+
 ---
 
 ## What the GGUF gained (the file must be RECONVERTED)
@@ -169,6 +190,7 @@ self-consistency and says so in the gate's banner rather than pretending.
 | `tokenizer.nllb.merges_hash` | u64, the checked invariant above | 8 B |
 | `tokenizer.nllb.n_merges` | u32 | 4 B |
 | `tokenizer.nllb.merges_hash_source` | provenance string | — |
+| `tokenizer.nllb.merges` | the merge list, **only** when the derivation does not fit this vocabulary (or `--embed-merges`) | absent on NLLB-200; ~6 MB when written |
 | `tokenizer.nllb.added_tokens` | the 207 AddedVocabulary strings | — |
 | `tokenizer.nllb.added_flags` | i32 bitfield: 1 single_word, 2 lstrip, 4 rstrip, 8 normalized | — |
 | `tokenizer.nllb.gcb_ranges` | UAX#29 Grapheme_Cluster_Break, as (lo, hi, prop) triples | 7056 B |

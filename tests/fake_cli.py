@@ -125,7 +125,8 @@ def serve(argv: list[str]) -> int:
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("-m", "--model", "-t", "--threads", "-n", "--max-new-tokens"):
+        if a in ("-m", "--model", "-t", "--threads", "-n", "--max-new-tokens",
+                 "-b", "--backend"):
             i += 2
             continue
         if a == "--src":

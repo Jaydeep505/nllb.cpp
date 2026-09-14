@@ -1,6 +1,8 @@
 #include "nllb.h"
 
 #include "ggml.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
 
@@ -8,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
 
 #ifndef _WIN32
 #  include <fcntl.h>
@@ -123,14 +127,245 @@ void nllb_munmap_file(void * addr, size_t size) {
 #endif
 }
 
+
+// --------------------------------------------------------------------------
+// execution helpers (step 13)
+//
+// Every graph in this file follows the same five moves, and they are the whole
+// of the port:
+//
+//   1. build the graph in a context created with no_alloc = true - it holds
+//      tensor STRUCTS and the graph, never data;
+//   2. mark every tensor the host writes with ggml_set_input and every tensor
+//      the host reads back with ggml_set_output;
+//   3. ggml_backend_sched_alloc_graph: split the graph across backends and let
+//      gallocr place every intermediate in the compute buffer;
+//   4. ggml_backend_tensor_set the inputs, compute;
+//   5. ggml_backend_tensor_get the outputs.
+//
+// Step 2 is not bookkeeping. gallocr reuses a tensor's memory as soon as its
+// last consumer has run, so a hidden state that is not marked as an output is
+// overwritten by something later in the graph and reads back as garbage - on
+// the CPU backend as much as on a GPU. The bump arena kept every intermediate
+// alive, which is why the old code could read any of them afterwards.
+// --------------------------------------------------------------------------
+
+// Nodes a graph may have, and the scheduler's hash-set size. The 12+12 600M
+// decoder with every hidden state expanded is well under 1000; the headroom is
+// for the parked batching and beam-search work.
+constexpr int NLLB_GRAPH_NODES = 8192;
+
+// The graph context holds tensor structs and the graph - ~3.4 MB of metadata
+// at 8192 nodes, most of it never touched. Measured on the first draft: a
+// fresh malloc of it per cached step cost ~100 minor faults and ~0.2 ms, the
+// same page-fault bill trap 17 found for the old data arena. So the caller
+// passes a buffer that lives as long as the model (one-shot graphs) or the
+// cache (steps), and it is reused.
+ggml_context * nllb_graph_ctx(std::vector<unsigned char> & meta) {
+    const size_t need = ggml_tensor_overhead() * NLLB_GRAPH_NODES
+                      + ggml_graph_overhead_custom(NLLB_GRAPH_NODES, false);
+    if (meta.size() < need) meta.resize(need);
+    ggml_init_params ip = {};
+    ip.mem_size   = meta.size();
+    ip.mem_buffer = meta.data();
+    ip.no_alloc   = true;
+    return ggml_init(ip);
+}
+
+ggml_backend_sched * nllb_new_sched(const nllb_model & m) {
+    // The CPU must be LAST: the scheduler assigns graph inputs to the last
+    // backend and uses it as the fallback for unsupported ops.
+    ggml_backend_t b[2];
+    int n = 0;
+    if (!m.on_cpu) b[n++] = m.backend;
+    b[n++] = m.backend_cpu;
+    // parallel = false: one copy of the inputs, no pipelining across splits.
+    // op_offload = false: an op whose weights live on the CPU stays on the CPU.
+    return ggml_backend_sched_new(b, nullptr, n, NLLB_GRAPH_NODES,
+                                  /*parallel=*/false, /*op_offload=*/false);
+}
+
+size_t nllb_sched_bytes(ggml_backend_sched * s) {
+    size_t total = 0;
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(s); ++i) {
+        total += ggml_backend_sched_get_buffer_size(s, ggml_backend_sched_get_backend(s, i));
+    }
+    return total;
+}
+
+bool nllb_alloc_graph(ggml_backend_sched * s, ggml_cgraph * gf, const char * what,
+                      std::string & err) {
+    ggml_backend_sched_reset(s);
+    if (!ggml_backend_sched_alloc_graph(s, gf)) {
+        err = std::string("ggml_backend_sched_alloc_graph failed (") + what + ")";
+        return false;
+    }
+    // NLLB_ARENA_TRACE=1: what every graph really needs, per backend, and how
+    // many splits it took. More than one split on a GPU backend means some
+    // op fell back to the CPU, with a copy in and a copy out around it - that
+    // is correct and slow, and this line is where you find out it happened.
+    if (::getenv("NLLB_ARENA_TRACE")) {
+        std::fprintf(stderr, "[arena] %-16s nodes %5d  splits %2d  compute",
+                     what, ggml_graph_n_nodes(gf), ggml_backend_sched_get_n_splits(s));
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(s); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(s, i);
+            std::fprintf(stderr, "  %s %.2f MiB", ggml_backend_name(b),
+                         ggml_backend_sched_get_buffer_size(s, b) / (1024.0 * 1024.0));
+        }
+        std::fprintf(stderr, "\n");
+    }
+    return true;
+}
+
+bool nllb_compute_graph(const nllb_model & m, ggml_backend_sched * s, ggml_cgraph * gf,
+                        int n_threads, const char * what, std::string & err) {
+    ggml_backend_cpu_set_n_threads(m.backend_cpu, n_threads > 0 ? n_threads : 1);
+    const ggml_status st = ggml_backend_sched_graph_compute(s, gf);
+    if (st != GGML_STATUS_SUCCESS) {
+        err = std::string("graph compute failed (") + what + "), status " +
+              std::to_string((int) st);
+        return false;
+    }
+    return true;
+}
+
+void nllb_get_f32(const ggml_tensor * t, std::vector<float> & dst, size_t n) {
+    dst.resize(n);
+    ggml_backend_tensor_get(t, dst.data(), 0, n * sizeof(float));
+}
+
+// The causal mask as DATA, [n_kv, Tq]: row j is query position n_past + j and
+// may see keys 0..n_past + j. 0 where visible, -inf where not.
+//
+// Why not ggml_diag_mask_inf, which the CPU path used since step 3: Metal
+// does not implement it, so under ggml_backend_sched every decoder layer
+// would bounce kq to the CPU and back - two copies and a sync per layer per
+// step. soft_max_ext with a mask is what every backend implements.
+//
+// It is BIT-IDENTICAL to diag_mask_inf on the CPU, and that was checked in
+// the kernel before it was measured: ggml_compute_forward_soft_max_f32 does
+// wp = kq * scale, then wp += slope * mask with slope = 1 when max_bias = 0.
+// With scale = 1 and a mask of exactly 0.0, both are exact no-ops on every
+// finite float; -inf is -inf either way. nllb-dump-states --diff against the
+// pre-port build is the measurement.
+//
+// Trap 13 is preserved exactly: an offset too LARGE still masks nothing at
+// Tq == 1. The chunked passes in tests/test_cache.cpp remain the only test of
+// this function's n_past arithmetic.
+void nllb_causal_mask(std::vector<float> & m, int n_kv, int Tq, int n_past) {
+    m.assign((size_t) n_kv * Tq, 0.0f);
+    for (int j = 0; j < Tq; ++j) {
+        for (int i = n_past + j + 1; i < n_kv; ++i) {
+            m[(size_t) j * n_kv + i] = -INFINITY;
+        }
+    }
+}
+
+std::string nllb_lower(std::string s) {
+    for (char & c : s) c = (char) std::tolower((unsigned char) c);
+    return s;
+}
+
+// Resolve the user's backend request to a device. nullptr means the CPU.
+//
+// THE NAMES ARE NOT THE MARKETING NAMES, and assuming they were is what made
+// `--backend metal` fail on the first M1 run while `--backend auto` worked:
+// ggml's Metal registry calls itself "MTL" and its devices "MTL0", "MTL1".
+// So a word like "metal" is matched as a FAMILY - against the registry name
+// and the device name, through the alias table below - and an exact device
+// name is matched first, because that is the unambiguous spelling
+// --list-backends prints.
+bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
+                      std::string & err) {
+    const std::string want = nllb_lower(want_in);
+    dev = nullptr;
+    if (want == "cpu") return true;
+
+    // Pass 1: an exact device name, as --list-backends prints it ("MTL0").
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        if (nllb_lower(ggml_backend_dev_name(d)) != want) continue;
+        const enum ggml_backend_dev_type t = ggml_backend_dev_type(d);
+        if (t == GGML_BACKEND_DEVICE_TYPE_CPU) { dev = nullptr; return true; }
+        if (t == GGML_BACKEND_DEVICE_TYPE_ACCEL) {
+            // BLAS and friends are accelerators that run alongside the CPU
+            // backend, not instead of it; nothing here schedules them.
+            err = "device '" + want_in + "' is an accelerator, not a backend "
+                  "the graphs can run on";
+            return false;
+        }
+        dev = d;
+        return true;
+    }
+
+    // Pass 2: the first GPU, either any of them ("auto"/"gpu") or one whose
+    // registry or device name matches the family asked for.
+    const bool any_gpu = want == "auto" || want == "gpu";
+    // Family -> the spellings ggml actually uses. "metal" is the one that bit;
+    // the others are here so that naming a backend ggml grows later works
+    // without another round trip.
+    static const struct { const char * family; const char * spellings[3]; } aliases[] = {
+        { "metal",  { "mtl",    "metal",  nullptr } },
+        { "vulkan", { "vk",     "vulkan", nullptr } },
+        { "cuda",   { "cuda",   nullptr,  nullptr } },
+        { "rocm",   { "rocm",   "hip",    nullptr } },
+        { "sycl",   { "sycl",   nullptr,  nullptr } },
+        { "opencl", { "opencl", "ocl",    nullptr } },
+    };
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        const enum ggml_backend_dev_type t = ggml_backend_dev_type(d);
+        if (t != GGML_BACKEND_DEVICE_TYPE_GPU && t != GGML_BACKEND_DEVICE_TYPE_IGPU) continue;
+        if (any_gpu) { dev = d; return true; }
+
+        const std::string name = nllb_lower(ggml_backend_dev_name(d));
+        const std::string reg  = nllb_lower(ggml_backend_reg_name(ggml_backend_dev_backend_reg(d)));
+        bool match = name.find(want) != std::string::npos ||
+                     reg.find(want)  != std::string::npos;
+        for (const auto & a : aliases) {
+            if (match || want != a.family) continue;
+            for (const char * sp : a.spellings) {
+                if (!sp) break;
+                if (name.find(sp) != std::string::npos || reg.find(sp) != std::string::npos) {
+                    match = true;
+                    break;
+                }
+            }
+        }
+        if (match) { dev = d; return true; }
+    }
+
+    if (want == "auto") return true;   // no GPU in this build: the CPU fallback
+
+    // Name every device rather than only saying no: the failure this replaced
+    // reported "metal is not available" on a machine whose device list began
+    // with MTL0, and the list was the thing that gave the bug away.
+    std::string have;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        have += std::string(have.empty() ? "" : ", ") + ggml_backend_dev_name(d) +
+                " (" + ggml_backend_reg_name(ggml_backend_dev_backend_reg(d)) + ")";
+    }
+    err = "backend '" + want_in + "' is not available in this build (devices: " + have +
+          "). Name one of those, or 'gpu', or 'cpu'";
+    return false;
+}
+
 } // namespace
 
 nllb_model::~nllb_model() {
-    // Order matters: ctx_w's tensors point INTO the mapping when mapped, so
-    // the context goes first and the mapping last. Freeing the map first
-    // leaves dangling ->data behind for anything still holding the model.
-    if (gguf)    { gguf_free(gguf);  gguf  = nullptr; }
-    if (ctx_w)   { ggml_free(ctx_w); ctx_w = nullptr; }
+    // Order matters twice over. The scheduler and the weight buffer reference
+    // the backends, so they go before them. And when mapped, the weight
+    // buffer WRAPS the mapping without owning it (buffer_from_host_ptr), and
+    // ctx_w's tensors point into it - so buffer and context go first and the
+    // mapping last. Freeing the map first leaves dangling ->data behind.
+    if (sched)       { ggml_backend_sched_free(sched);        sched = nullptr; }
+    if (weights_buf) { ggml_backend_buffer_free(weights_buf); weights_buf = nullptr; }
+    if (gguf)        { gguf_free(gguf);  gguf  = nullptr; }
+    if (ctx_w)       { ggml_free(ctx_w); ctx_w = nullptr; }
+    if (backend && backend != backend_cpu) ggml_backend_free(backend);
+    if (backend_cpu) ggml_backend_free(backend_cpu);
+    backend = backend_cpu = nullptr;
     if (mapping) { nllb_munmap_file(mapping, mapping_size);
                    mapping = nullptr; mapping_size = 0; mapped = false; }
 }
@@ -139,19 +374,100 @@ nllb_model::~nllb_model() {
 // load
 // --------------------------------------------------------------------------
 
+std::vector<std::string> nllb_list_backends() {
+    std::vector<std::string> out;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        const char * type = "?";
+        switch (ggml_backend_dev_type(d)) {
+            case GGML_BACKEND_DEVICE_TYPE_CPU:   type = "cpu";   break;
+            case GGML_BACKEND_DEVICE_TYPE_GPU:   type = "gpu";   break;
+            case GGML_BACKEND_DEVICE_TYPE_IGPU:  type = "igpu";  break;
+            case GGML_BACKEND_DEVICE_TYPE_ACCEL: type = "accel - not schedulable here"; break;
+            default: break;
+        }
+        out.push_back(std::string(ggml_backend_dev_name(d)) + " - " +
+                      ggml_backend_dev_description(d) + " (" + type + ")");
+    }
+    return out;
+}
+
+namespace {
+
+// Read every weight from the file into tensors that already live in a backend
+// buffer. The destination may be device memory, so this goes through
+// ggml_backend_tensor_set with a bounded host staging buffer rather than
+// through ->data - the copy gguf_init_from_file(no_alloc = false) used to do
+// straight into host memory is exactly the pattern a device backend forbids.
+bool nllb_read_weights(const std::string & path, gguf_context * g, ggml_context * ctx,
+                       std::string & err) {
+    FILE * f = std::fopen(path.c_str(), "rb");
+    if (!f) { err = "cannot open " + path; return false; }
+    const size_t data_off = gguf_get_data_offset(g);
+    std::vector<char> stage((size_t) 64 * 1024 * 1024);
+    for (int64_t i = 0; i < gguf_get_n_tensors(g); ++i) {
+        const char * name = gguf_get_tensor_name(g, i);
+        ggml_tensor * t = ggml_get_tensor(ctx, name);
+        if (!t) { std::fclose(f); err = std::string("tensor vanished: ") + name; return false; }
+        const size_t nb = ggml_nbytes(t);
+#ifdef _WIN32
+        if (_fseeki64(f, (long long) (data_off + gguf_get_tensor_offset(g, i)), SEEK_SET) != 0) {
+#else
+        if (fseeko(f, (off_t) (data_off + gguf_get_tensor_offset(g, i)), SEEK_SET) != 0) {
+#endif
+            std::fclose(f); err = std::string("seek failed for ") + name; return false;
+        }
+        for (size_t done = 0; done < nb; ) {
+            const size_t n = std::min(stage.size(), nb - done);
+            if (std::fread(stage.data(), 1, n, f) != n) {
+                std::fclose(f);
+                err = std::string("short read in tensor ") + name + " - truncated file?";
+                return false;
+            }
+            ggml_backend_tensor_set(t, stage.data(), done, n);
+            done += n;
+        }
+    }
+    std::fclose(f);
+    return true;
+}
+
+} // namespace
+
 bool nllb_model_load(const std::string & path, nllb_model & model, std::string & err,
-                     bool use_mmap) {
-    // Try the mapping FIRST, because it decides how gguf is asked to parse:
-    // no_alloc = true creates the ggml_tensor structs with correct name, type
-    // and ne but leaves ->data null and reads no bytes, which is exactly the
-    // shape we need. If the map fails we fall back to no_alloc = false and
-    // gguf copies the blob onto the heap as before.
+                     bool use_mmap, const std::string & backend) {
+    // ---- backends first: they decide where the weights may live ----------
+    // (Skipped on the read-fallback recursion below, which keeps them.)
+    if (!model.backend_cpu) {
+        std::string want = backend;
+        if (want.empty()) {
+            const char * env = ::getenv("NLLB_BACKEND");
+            want = env && *env ? env : "cpu";
+        }
+        ggml_backend_dev_t dev = nullptr;
+        if (!nllb_pick_device(want, dev, err)) return false;
+
+        model.backend_cpu = ggml_backend_cpu_init();
+        if (!model.backend_cpu) { err = "ggml_backend_cpu_init failed"; return false; }
+        model.backend = dev ? ggml_backend_dev_init(dev, nullptr) : model.backend_cpu;
+        if (!model.backend) {
+            err = std::string("failed to initialise backend ") + ggml_backend_dev_name(dev);
+            return false;
+        }
+        model.on_cpu       = model.backend == model.backend_cpu;
+        model.backend_name = ggml_backend_name(model.backend);
+    }
+
+    // Try the mapping FIRST. gguf is ALWAYS parsed with no_alloc = true now:
+    // it creates the ggml_tensor structs with correct name, type and ne and
+    // reads no bytes, and the bytes are then attached in one of two ways
+    // below - wrapped in place (mapped) or copied into a backend buffer (read).
     size_t map_size = 0;
     void * map_addr = use_mmap ? nllb_mmap_file(path, map_size) : nullptr;
 
     ggml_context * ctx_data = nullptr;
     gguf_init_params gp = {};
-    gp.no_alloc = map_addr != nullptr;
+    gp.no_alloc = true;
     gp.ctx      = &ctx_data;
 
     const bool trace = ::getenv("NLLB_LOAD_TRACE") != nullptr;
@@ -163,23 +479,32 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         return false;
     }
     if (trace) {
-        // With no_alloc = true this is metadata only - but "metadata only"
-        // still means the tokenizer's ~7 MB of KV: 256204 token strings, the
-        // charsmap and the grapheme tables. It is not free, and once the blob
-        // copy is gone it is a visible share of what remains.
-        std::fprintf(stderr, "[load-trace] gguf parse (%s) %7.2f ms\n",
-                     gp.no_alloc ? "no_alloc, metadata only"
-                                 : "reads the whole tensor blob",
+        std::fprintf(stderr, "[load-trace] gguf parse (metadata only)  %7.2f ms\n",
                      nllb_now_ms() - t_parse0);
     }
 
     model.gguf  = g;
     model.ctx_w = ctx_data;
 
+    ggml_backend_dev_t pdev = ggml_backend_get_device(model.backend);
+    ggml_backend_dev_props props;
+    ggml_backend_dev_get_props(pdev, &props);
+
+    if (map_addr && !props.caps.buffer_from_host_ptr) {
+        // The device cannot wrap host memory, so mapping buys nothing: the
+        // bytes have to be copied into device memory either way.
+        if (trace) std::fprintf(stderr, "[load-trace] %s cannot wrap host memory - reading\n",
+                                model.backend_name.c_str());
+        nllb_munmap_file(map_addr, map_size);
+        map_addr = nullptr;
+    }
+
     if (map_addr) {
-        // Point every tensor at its bytes inside the mapping. gguf_get_data_
-        // offset is where the blob starts (padded to general.alignment) and
-        // each tensor offset is relative to that.
+        // Wrap the whole mapping in ONE backend buffer and place every tensor
+        // at its offset inside it. On the CPU this is the step-10 mmap path
+        // unchanged in effect; on Metal it is zero-copy too, because Apple
+        // silicon's GPU reads the same unified memory - the mapped file becomes
+        // an MTLBuffer and nothing is uploaded.
         const double   t_fix0   = nllb_now_ms();
         const size_t   data_off = gguf_get_data_offset(g);
         const int64_t  n_tensor = gguf_get_n_tensors(g);
@@ -192,36 +517,65 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         // hand a misaligned pointer to a SIMD kernel and crash somewhere else.
         bool ok = align >= 16 && (align & (align - 1)) == 0 && data_off % align == 0;
 
+        size_t max_tensor = 0;
         for (int64_t i = 0; ok && i < n_tensor; ++i) {
-            const char * name = gguf_get_tensor_name(g, i);
-            ggml_tensor * t = ggml_get_tensor(ctx_data, name);
+            ggml_tensor * t = ggml_get_tensor(ctx_data, gguf_get_tensor_name(g, i));
             if (!t) { ok = false; break; }
-
             const size_t off = gguf_get_tensor_offset(g, i);
             if (data_off + off + ggml_nbytes(t) > map_size) { ok = false; break; }
-            t->data = base + data_off + off;
+            max_tensor = std::max(max_tensor, ggml_nbytes(t));
+        }
+
+        ggml_backend_buffer_t buf = nullptr;
+        if (ok) {
+            buf = ggml_backend_dev_buffer_from_host_ptr(pdev, map_addr, map_size, max_tensor);
+            ok = buf != nullptr;
+        }
+        for (int64_t i = 0; ok && i < n_tensor; ++i) {
+            ggml_tensor * t = ggml_get_tensor(ctx_data, gguf_get_tensor_name(g, i));
+            ok = ggml_backend_tensor_alloc(buf, t, base + data_off + gguf_get_tensor_offset(g, i))
+                 == GGML_STATUS_SUCCESS;
         }
 
         if (!ok) {
             // Nothing is half-done: drop the whole attempt and redo the load
             // by reading. A file we cannot map is not a file we cannot use.
+            if (buf) ggml_backend_buffer_free(buf);
             gguf_free(g);
             ggml_free(ctx_data);
             model.gguf = nullptr; model.ctx_w = nullptr;
             nllb_munmap_file(map_addr, map_size);
-            return nllb_model_load(path, model, err, /*use_mmap =*/ false);
+            return nllb_model_load(path, model, err, /*use_mmap =*/ false, backend);
         }
 
-        model.mapping      = map_addr;
-        model.mapping_size = map_size;
-        model.mapped       = true;
+        model.weights_buf      = buf;
+        model.weights_host_ptr = true;
+        model.mapping          = map_addr;
+        model.mapping_size     = map_size;
+        model.mapped           = true;
 
         if (trace) {
             std::fprintf(stderr,
-                "[load-trace] pointer fixup, %lld tensors %7.2f ms\n",
-                (long long) n_tensor, nllb_now_ms() - t_fix0);
+                "[load-trace] wrap mapping in a %s buffer, %lld tensors %7.2f ms\n",
+                ggml_backend_buffer_name(buf), (long long) n_tensor, nllb_now_ms() - t_fix0);
+        }
+    } else {
+        const double t_read0 = nllb_now_ms();
+        model.weights_buf = ggml_backend_alloc_ctx_tensors_from_buft(
+                ctx_data, ggml_backend_get_default_buffer_type(model.backend));
+        if (!model.weights_buf) {
+            err = "could not allocate the weights on " + model.backend_name;
+            return false;
+        }
+        if (!nllb_read_weights(path, g, ctx_data, err)) return false;
+        if (trace) {
+            std::fprintf(stderr, "[load-trace] read weights into a %s buffer %7.2f ms\n",
+                         ggml_backend_buffer_name(model.weights_buf), nllb_now_ms() - t_read0);
         }
     }
+    // The scheduler puts an op on the backend that holds its weights, and it
+    // only recognises a buffer as holding weights by this flag.
+    ggml_backend_buffer_set_usage(model.weights_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
 
     {
         const int64_t id = gguf_find_key(g, "general.architecture");
@@ -353,6 +707,9 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
               " rows, need " + std::to_string(hp.n_ctx + hp.pos_offset);
         return false;
     }
+
+    model.sched = nllb_new_sched(model);
+    if (!model.sched) { err = "ggml_backend_sched_new failed"; return false; }
     return true;
 }
 
@@ -375,40 +732,33 @@ bool nllb_encode(const nllb_model & model,
     if (T <= 0)                      { err = "empty input";        return false; }
     if (T > hp.n_ctx && hp.n_ctx > 0){ err = "sequence too long";  return false; }
 
-    // ggml_graph_compute_with_ctx allocates work buffers inside the context
-    // too, so be generous. Every intermediate stays live (no reuse), which is
-    // what lets us read per-layer states back out afterwards.
-    size_t per_layer = (size_t) 32 * T * D + (size_t) 6 * T * T * H;
-    size_t mem = ((size_t) hp.n_layer * per_layer + (size_t) 64 * T * D) * sizeof(float);
-    mem = mem * 2 + 64u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 4096
-        + ggml_graph_overhead();
-
-    ggml_init_params ip = {};
-    ip.mem_size   = mem;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc   = false;
-    ggml_context * ctx = ggml_init(ip);
+    // No arena formula any more: the context holds structs and the graph, and
+    // gallocr sizes the compute buffer from the graph itself. Only the hidden
+    // states the caller asked for are kept alive (ggml_set_output); everything
+    // else is reused as soon as its last consumer has run.
+    ggml_context * ctx = nllb_graph_ctx(model.graph_meta);
     if (!ctx) { err = "ggml_init failed"; return false; }
 
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
 
     ggml_tensor * inp_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
     ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
     ggml_set_name(inp_ids, "inp_ids");
     ggml_set_name(inp_pos, "inp_pos");
-    std::memcpy(inp_ids->data, ids.data(), T * sizeof(int32_t));
+    ggml_set_input(inp_ids);
+    ggml_set_input(inp_pos);
 
     // HF: position_ids = cumsum(ne_pad) * ne_pad + padding_idx, and the table
     // was built with offset 2 == padding_idx + 1. For an unpadded sequence
     // this is simply j + 2 - but write it the general way so padded batches
     // stay correct.
+    std::vector<int32_t> pos(T);
     {
-        int32_t * p = (int32_t *) inp_pos->data;
         int32_t run = 0;
         for (int j = 0; j < T; ++j) {
             const bool is_pad = (ids[j] == hp.pad_id);
             if (!is_pad) ++run;
-            p[j] = is_pad ? hp.pad_id : run + hp.pad_id;
+            pos[j] = is_pad ? hp.pad_id : run + hp.pad_id;
         }
     }
 
@@ -467,37 +817,38 @@ bool nllb_encode(const nllb_model & model,
     cur = ggml_norm(ctx, cur, hp.eps);
     cur = ggml_add(ctx, ggml_mul(ctx, cur, model.out_norm_w), model.out_norm_b);
     ggml_set_name(cur, "enc_out");
+    ggml_set_output(cur);
     hs.push_back(cur);   // HF hidden_states[n_layer] == post-final-norm output
 
     ggml_build_forward_expand(gf, cur);
     if (want_hidden_states) {
-        for (ggml_tensor * t : hs) ggml_build_forward_expand(gf, t);
+        for (ggml_tensor * t : hs) { ggml_set_output(t); ggml_build_forward_expand(gf, t); }
     }
 
-    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
-    if (st != GGML_STATUS_SUCCESS) {
-        err = "ggml_graph_compute failed, status " + std::to_string((int) st);
-        ggml_free(ctx);
-        return false;
+    ggml_backend_sched * sched = model.sched;
+    bool ok = nllb_alloc_graph(sched, gf, "encoder", err);
+    if (ok) {
+        ggml_backend_tensor_set(inp_ids, ids.data(), 0, (size_t) T * sizeof(int32_t));
+        ggml_backend_tensor_set(inp_pos, pos.data(), 0, (size_t) T * sizeof(int32_t));
+        ok = nllb_compute_graph(model, sched, gf, n_threads, "encoder", err);
     }
+    if (ok) {
+        out.n_tokens = T;
+        out.d_model  = D;
+        nllb_get_f32(cur, out.output, (size_t) T * D);
 
-    out.n_tokens = T;
-    out.d_model  = D;
-    out.output.resize((size_t) T * D);
-    std::memcpy(out.output.data(), cur->data, out.output.size() * sizeof(float));
-
-    out.hidden_states.clear();
-    if (want_hidden_states) {
-        out.hidden_states.resize(hs.size());
-        for (size_t i = 0; i < hs.size(); ++i) {
-            out.hidden_states[i].resize((size_t) T * D);
-            std::memcpy(out.hidden_states[i].data(), hs[i]->data,
-                        out.hidden_states[i].size() * sizeof(float));
+        out.hidden_states.clear();
+        if (want_hidden_states) {
+            out.hidden_states.resize(hs.size());
+            for (size_t i = 0; i < hs.size(); ++i) {
+                nllb_get_f32(hs[i], out.hidden_states[i], (size_t) T * D);
+            }
         }
     }
 
+    ggml_backend_sched_reset(sched);
     ggml_free(ctx);
-    return true;
+    return ok;
 }
 
 // --------------------------------------------------------------------------
@@ -549,36 +900,19 @@ bool nllb_decode(const nllb_model & model,
 
     const bool want_logits = logits_mode != NLLB_LOGITS_NONE;
     const int  logit_rows  = logits_mode == NLLB_LOGITS_LAST ? 1 : Td;
-    // Size the logits budget from the tensor that actually produces them, not
-    // from nllb.vocab_size - that key is optional metadata and defaults to 0,
-    // which would silently budget nothing for a [vocab, Td] result.
-    const int  vocab_rows  = (int) model.lm_head()->ne[1];
-
-    size_t per_layer = (size_t) 48 * Td * D
-                     + (size_t)  8 * Td * Td * H
-                     + (size_t) 12 * Td * Ts * H
-                     + (size_t)  8 * Ts * D
-                     + (size_t)  6 * Td * hp.n_dec_ff;
-    size_t mem = ((size_t) L * per_layer + (size_t) 64 * Td * D
-                  + (size_t) 2 * Ts * D) * sizeof(float);
-    if (want_logits) mem += (size_t) 3 * logit_rows * vocab_rows * sizeof(float);
-    mem = mem * 2 + 128u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 8192
-        + ggml_graph_overhead();
-
-    ggml_init_params ip = {};
-    ip.mem_size   = mem;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc   = false;
-    ggml_context * ctx = ggml_init(ip);
+    // (The logits are sized from the lm_head tensor below, not from
+    // nllb.vocab_size - that key is optional metadata and defaults to 0.)
+    ggml_context * ctx = nllb_graph_ctx(model.graph_meta);
     if (!ctx) { err = "ggml_init failed (decoder)"; return false; }
 
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
 
     ggml_tensor * inp_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Td);
     ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Td);
     ggml_set_name(inp_ids, "dec_ids");
     ggml_set_name(inp_pos, "dec_pos");
-    std::memcpy(inp_ids->data, dec_ids.data(), Td * sizeof(int32_t));
+    ggml_set_input(inp_ids);
+    ggml_set_input(inp_pos);
 
     // Position ids. The two rules below agree on any sequence without pad_id in
     // it, which is every golden case here, and disagree as soon as one appears.
@@ -599,8 +933,9 @@ bool nllb_decode(const nllb_model & model,
     // This is HF being inconsistent with itself, not a choice made here. The
     // caller picks the rule that matches the reference it is being diffed
     // against; see nllb_pos_mode in nllb.h.
+    std::vector<int32_t> pos(Td);
     {
-        int32_t * p = (int32_t *) inp_pos->data;
+        int32_t * p = pos.data();
         int32_t run = 0;
         for (int j = 0; j < Td; ++j) {
             const bool is_pad = (dec_ids[j] == hp.pad_id);
@@ -614,7 +949,7 @@ bool nllb_decode(const nllb_model & model,
     // [Ts, D] buffer nllb_encode returns.
     ggml_tensor * enc_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, Ts);
     ggml_set_name(enc_t, "enc_out");
-    std::memcpy(enc_t->data, enc.output.data(), (size_t) Ts * D * sizeof(float));
+    ggml_set_input(enc_t);
 
     ggml_tensor * cur = ggml_get_rows(ctx, model.tok_embd, inp_ids);
     cur = ggml_scale(ctx, cur, hp.embd_scale);
@@ -648,8 +983,20 @@ bool nllb_decode(const nllb_model & model,
 
         ggml_tensor * kq = ggml_mul_mat(ctx, K, Q);                // (Td_k, Td_q, H)
         // The one structural difference from the encoder. n_past is 0 because
-        // this is the un-cached path; with a KV cache it becomes the number of
-        // already-decoded tokens.
+        // this is the un-cached path.
+        //
+        // STILL ggml_diag_mask_inf, deliberately, although the cached step
+        // moved to a mask tensor (nllb_causal_mask) because Metal does not
+        // implement this op. This path is the REFERENCE the cache gate diffs
+        // the cached step against, and the first draft of step 13 routed both
+        // through the one helper - which made tests/test_cache.cpp blind to
+        // any bug in it: a mask offset one too large broke both sides
+        // identically and the gate passed (tests/corrupt_backend.py,
+        // `mask-too-large`). Trap 44 again: a control that shares the defect
+        // is not a control. Keeping ggml's own op here keeps two independent
+        // implementations of the mask. The price is that on Metal this op runs
+        // on the CPU fallback - in the reference path only, and it is the one
+        // place the fallback is exercised on purpose.
         kq = ggml_diag_mask_inf(ctx, kq, 0);
         kq = ggml_soft_max_ext(ctx, kq, nullptr, 1.0f, 0.0f);
         ggml_tensor * kqv = ggml_mul_mat(ctx, V, kq);              // (HD, Td, H)
@@ -701,6 +1048,7 @@ bool nllb_decode(const nllb_model & model,
     cur = ggml_norm(ctx, cur, hp.eps);
     cur = ggml_add(ctx, ggml_mul(ctx, cur, model.dec_out_norm_w), model.dec_out_norm_b);
     ggml_set_name(cur, "dec_out");
+    ggml_set_output(cur);
     hs.push_back(cur);   // HF decoder_hidden_states[n_dec_layer]
 
     // lm_head, tied to token_embd unless the checkpoint untied it. ne of the
@@ -719,47 +1067,48 @@ bool nllb_decode(const nllb_model & model,
         }
         logits = ggml_mul_mat(ctx, model.lm_head(), lm_in);
         ggml_set_name(logits, "logits");
+        ggml_set_output(logits);
         ggml_build_forward_expand(gf, logits);
     }
 
     ggml_build_forward_expand(gf, cur);
     if (want_hidden_states) {
-        for (ggml_tensor * t : hs) ggml_build_forward_expand(gf, t);
+        for (ggml_tensor * t : hs) { ggml_set_output(t); ggml_build_forward_expand(gf, t); }
     }
 
-    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
-    if (st != GGML_STATUS_SUCCESS) {
-        err = "ggml_graph_compute failed (decoder), status " + std::to_string((int) st);
-        ggml_free(ctx);
-        return false;
+    ggml_backend_sched * sched = model.sched;
+    bool ok = nllb_alloc_graph(sched, gf, "decoder", err);
+    if (ok) {
+        ggml_backend_tensor_set(inp_ids, dec_ids.data(), 0, (size_t) Td * sizeof(int32_t));
+        ggml_backend_tensor_set(inp_pos, pos.data(),     0, (size_t) Td * sizeof(int32_t));
+        ggml_backend_tensor_set(enc_t, enc.output.data(), 0, (size_t) Ts * D * sizeof(float));
+        ok = nllb_compute_graph(model, sched, gf, n_threads, "decoder", err);
     }
+    if (ok) {
+        out.n_tokens = Td;
+        out.d_model  = D;
+        out.n_vocab  = (int32_t) model.lm_head()->ne[1];
+        nllb_get_f32(cur, out.output, (size_t) Td * D);
 
-    out.n_tokens = Td;
-    out.d_model  = D;
-    out.n_vocab  = (int32_t) model.lm_head()->ne[1];
-    out.output.resize((size_t) Td * D);
-    std::memcpy(out.output.data(), cur->data, out.output.size() * sizeof(float));
+        out.logits.clear();
+        out.n_logit_rows = 0;
+        if (want_logits) {
+            out.n_logit_rows = logit_rows;
+            nllb_get_f32(logits, out.logits, (size_t) logit_rows * out.n_vocab);
+        }
 
-    out.logits.clear();
-    out.n_logit_rows = 0;
-    if (want_logits) {
-        out.n_logit_rows = logit_rows;
-        out.logits.resize((size_t) logit_rows * out.n_vocab);
-        std::memcpy(out.logits.data(), logits->data, out.logits.size() * sizeof(float));
-    }
-
-    out.hidden_states.clear();
-    if (want_hidden_states) {
-        out.hidden_states.resize(hs.size());
-        for (size_t i = 0; i < hs.size(); ++i) {
-            out.hidden_states[i].resize((size_t) Td * D);
-            std::memcpy(out.hidden_states[i].data(), hs[i]->data,
-                        out.hidden_states[i].size() * sizeof(float));
+        out.hidden_states.clear();
+        if (want_hidden_states) {
+            out.hidden_states.resize(hs.size());
+            for (size_t i = 0; i < hs.size(); ++i) {
+                nllb_get_f32(hs[i], out.hidden_states[i], (size_t) Td * D);
+            }
         }
     }
 
+    ggml_backend_sched_reset(sched);
     ggml_free(ctx);
-    return true;
+    return ok;
 }
 
 // --------------------------------------------------------------------------
@@ -774,18 +1123,30 @@ bool nllb_decode(const nllb_model & model,
 //   k_self [HD, n_ctx, H]   token t at row t of each head slice
 //   v_self [n_ctx, HD, H]   transposed, because mul_mat wants (n_kv, HD, H)
 //
-// Both halves live in a ggml_context the cache owns. The per-step graph gets a
-// context of its own and refers to these tensors across contexts, exactly as it
-// already does for the model weights.
+// Both halves live in one backend buffer the cache owns, on the model's primary
+// backend. The per-step graph gets a context of its own and refers to these
+// tensors across contexts, exactly as it already does for the model weights.
 // --------------------------------------------------------------------------
 
 nllb_kv_cache::~nllb_kv_cache() {
-    if (ctx) { ggml_free(ctx); ctx = nullptr; }
+    if (sched) { ggml_backend_sched_free(sched);  sched = nullptr; }
+    if (buf)   { ggml_backend_buffer_free(buf);   buf   = nullptr; }
+    if (ctx)   { ggml_free(ctx); ctx = nullptr; }
 }
 
 void nllb_kv_cache_reset(nllb_kv_cache & cache) {
     cache.n_past = 0;
 }
+
+namespace {
+void nllb_kv_cache_release(nllb_kv_cache & cache) {
+    if (cache.sched) { ggml_backend_sched_free(cache.sched); cache.sched = nullptr; }
+    if (cache.buf)   { ggml_backend_buffer_free(cache.buf);  cache.buf   = nullptr; }
+    if (cache.ctx)   { ggml_free(cache.ctx); cache.ctx = nullptr; }
+    cache.k_self.clear();  cache.v_self.clear();
+    cache.k_cross.clear(); cache.v_cross.clear();
+}
+} // namespace
 
 bool nllb_kv_cache_init(const nllb_model & model,
                         const nllb_encode_result & enc,
@@ -815,27 +1176,20 @@ bool nllb_kv_cache_init(const nllb_model & model,
         err = "unknown kv cache type " + std::to_string(kv_type);
         return false;
     }
-    // The only place the type is turned into a ggml type. Everything below is
-    // written in terms of `kvt` and ggml_type_size(kvt), so adding a third
-    // option here is the whole change - and the arena formulas further down
-    // stay in units of f32 ACTIVATIONS, which is still correct because the
-    // cache is not in the graph arena.
+    // The only place the type is turned into a ggml type.
     const ggml_type kvt = kv_type == NLLB_KV_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
-    if (cache.ctx) { ggml_free(cache.ctx); cache.ctx = nullptr; }
-    cache.k_self.clear();  cache.v_self.clear();
-    cache.k_cross.clear(); cache.v_cross.clear();
+    nllb_kv_cache_release(cache);
 
-    // Four tensors per layer. The self half is sized by capacity, the cross
-    // half by the source length - which is why a new sentence needs a new init
-    // and not a reset.
-    const size_t cache_elems = (size_t) L * 2 * ((size_t) n_ctx_cache * D + (size_t) Ts * D);
+    // Four tensors per layer, as STRUCTS in a no_alloc context; the bytes are
+    // one backend buffer on the model's primary backend, so on Metal the cache
+    // lives where the attention that reads it runs. The self half is sized by
+    // capacity, the cross half by the source length - which is why a new
+    // sentence needs a new init and not a reset.
     ggml_init_params cp = {};
-    cp.mem_size   = cache_elems * ggml_type_size(kvt)
-                  + (size_t) ggml_tensor_overhead() * (4 * L + 16)
-                  + 1024u * 1024;
+    cp.mem_size   = (size_t) ggml_tensor_overhead() * (4 * L + 16);
     cp.mem_buffer = nullptr;
-    cp.no_alloc   = false;
+    cp.no_alloc   = true;
     cache.ctx = ggml_init(cp);
     if (!cache.ctx) { err = "ggml_init failed (kv cache)"; return false; }
 
@@ -846,6 +1200,7 @@ bool nllb_kv_cache_init(const nllb_model & model,
     cache.d_model = D;
     cache.n_head  = H;
     cache.n_layer = L;
+    cache.model   = &model;
 
     cache.k_self.resize(L);  cache.v_self.resize(L);
     cache.k_cross.resize(L); cache.v_cross.resize(L);
@@ -854,32 +1209,35 @@ bool nllb_kv_cache_init(const nllb_model & model,
         cache.v_self[il]  = ggml_new_tensor_3d(cache.ctx, kvt, n_ctx_cache, HD, H);
         cache.k_cross[il] = ggml_new_tensor_3d(cache.ctx, kvt, HD, Ts, H);
         cache.v_cross[il] = ggml_new_tensor_3d(cache.ctx, kvt, Ts, HD, H);
-        if (!cache.k_self[il] || !cache.v_self[il] ||
-            !cache.k_cross[il] || !cache.v_cross[il]) {
-            err = "kv cache allocation failed at layer " + std::to_string(il);
-            ggml_free(cache.ctx); cache.ctx = nullptr;
-            return false;
-        }
     }
+    cache.buf = ggml_backend_alloc_ctx_tensors_from_buft(
+            cache.ctx, ggml_backend_get_default_buffer_type(model.backend));
+    if (!cache.buf) {
+        err = "kv cache allocation failed on " + model.backend_name;
+        nllb_kv_cache_release(cache);
+        return false;
+    }
+    // Deliberately NOT cleared. The step-5 cache lived in a fresh malloc and
+    // read as whatever the allocator handed back; nothing reads a slot before
+    // it is written (the mask hides every slot >= n_kv, and the views never
+    // reach past n_kv), and the [arena] and `full` passes in the cache gate
+    // would say so if that ever stopped being true.
+    ggml_backend_buffer_set_usage(cache.buf, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+
+    cache.sched = nllb_new_sched(model);
+    if (!cache.sched) { err = "ggml_backend_sched_new failed (kv cache)";
+                        nllb_kv_cache_release(cache); return false; }
 
     // ---- fill the cross-attention half: one graph, once per source ----
-    size_t mem = ((size_t) L * 8 * Ts * D + (size_t) 8 * Ts * D) * sizeof(float);
-    mem = mem * 2 + 32u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 1024
-        + ggml_graph_overhead();
-
-    ggml_init_params ip = {};
-    ip.mem_size   = mem;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc   = false;
-    ggml_context * ctx = ggml_init(ip);
+    ggml_context * ctx = nllb_graph_ctx(model.graph_meta);
     if (!ctx) { err = "ggml_init failed (cross-attention cache build)";
-                ggml_free(cache.ctx); cache.ctx = nullptr; return false; }
+                nllb_kv_cache_release(cache); return false; }
 
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
 
     ggml_tensor * enc_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, Ts);
     ggml_set_name(enc_t, "enc_out");
-    std::memcpy(enc_t->data, enc.output.data(), (size_t) Ts * D * sizeof(float));
+    ggml_set_input(enc_t);
 
     for (int il = 0; il < L; ++il) {
         const nllb_dec_layer & l = model.dec[il];
@@ -894,18 +1252,21 @@ bool nllb_kv_cache_init(const nllb_model & model,
         cK = ggml_permute(ctx, ggml_reshape_3d(ctx, cK, HD, H, Ts), 0, 2, 1, 3); // (HD, Ts, H)
         cV = ggml_permute(ctx, ggml_reshape_3d(ctx, cV, HD, H, Ts), 1, 2, 0, 3); // (Ts, HD, H)
 
+        // A ggml_cpy INTO a pre-allocated tensor: the scheduler runs it on the
+        // backend that owns the cache buffer, so the write lands in the cache
+        // and not in a temporary copy of it.
         ggml_build_forward_expand(gf, ggml_cpy(ctx, cK, cache.k_cross[il]));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, cV, cache.v_cross[il]));
     }
 
-    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
-    ggml_free(ctx);
-    if (st != GGML_STATUS_SUCCESS) {
-        err = "ggml_graph_compute failed (cross-attention cache), status " +
-              std::to_string((int) st);
-        ggml_free(cache.ctx); cache.ctx = nullptr;
-        return false;
+    bool ok = nllb_alloc_graph(model.sched, gf, "cross-kv build", err);
+    if (ok) {
+        ggml_backend_tensor_set(enc_t, enc.output.data(), 0, (size_t) Ts * D * sizeof(float));
+        ok = nllb_compute_graph(model, model.sched, gf, n_threads, "cross-attention cache", err);
     }
+    ggml_backend_sched_reset(model.sched);
+    ggml_free(ctx);
+    if (!ok) { nllb_kv_cache_release(cache); return false; }
     return true;
 }
 
@@ -927,10 +1288,10 @@ bool nllb_decode_cached(const nllb_model & model,
     const int H  = hp.n_dec_head;
     const int HD = hp.dec_head_dim();
     const int L  = hp.n_dec_layer;
-    const int Ts = cache.n_src;
 
     if (!model.has_decoder) { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
-    if (!cache.ctx)         { err = "kv cache is not initialised (call nllb_kv_cache_init)"; return false; }
+    if (!cache.ctx || !cache.buf) { err = "kv cache is not initialised (call nllb_kv_cache_init)"; return false; }
+    if (cache.model != &model) { err = "kv cache was built for a different nllb_model"; return false; }
     if (Tn <= 0)            { err = "empty decoder input"; return false; }
     if (cache.n_layer != L || cache.d_model != D || cache.n_head != H) {
         err = "kv cache was built for a different model shape";
@@ -946,68 +1307,30 @@ bool nllb_decode_cached(const nllb_model & model,
 
     const bool want_logits = logits_mode != NLLB_LOGITS_NONE;
     const int  logit_rows  = logits_mode == NLLB_LOGITS_LAST ? 1 : Tn;
-    const int  vocab_rows  = (int) model.lm_head()->ne[1];
 
-    // No Ts*D term per layer: the cross-attention projections are already in
-    // the cache, which is the largest single saving here at short target
-    // lengths. What is left scales with Tn, not with the prefix.
-    size_t per_layer = (size_t) 48 * Tn * D
-                     + (size_t) 12 * Tn * n_kv * H
-                     + (size_t) 12 * Tn * Ts  * H
-                     + (size_t)  6 * Tn * hp.n_dec_ff;
-    size_t mem = ((size_t) L * per_layer + (size_t) 64 * Tn * D) * sizeof(float);
-    if (want_logits) mem += (size_t) 3 * logit_rows * vocab_rows * sizeof(float);
-    mem = mem * 2 + 64u * 1024 * 1024 + (size_t) ggml_tensor_overhead() * 8192
-        + ggml_graph_overhead();
-
-    const clk::time_point t_alloc0 = clk::now();
-    ggml_init_params ip = {};
-    ip.mem_size   = mem;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc   = false;
-    // Reuse the arena across steps when the cache is carrying one, so the pages
-    // are faulted in once rather than once per token. `mem_size` is the
-    // buffer's real size rather than this step's estimate; ggml bump-allocates
-    // within it either way. ggml_free will not free a buffer it did not
-    // allocate (ggml.c: mem_buffer_owned = params.mem_buffer ? false : true),
-    // so this allocation survives the loop and dies with the cache.
-    //
-    // `new char[]` and not vector/assign/memset: default-initialised, so the
-    // pages stay untouched and the first step faults in only the ~4 MB it
-    // actually uses. Pre-zeroing all 80 MB is a 360 ms bill against a 4 ms/step
-    // saving - see nllb_kv_cache::scratch in nllb.h.
-    //
-    // THE HEADROOM IS NOT DECORATION. `mem` is not constant across steps: the
-    // per-layer term carries 12 * Tn * n_kv * H and n_kv grows by one every
-    // step, so a buffer grown to exactly `mem` is short again on the very next
-    // one. With a zeroing allocator that mistake cost 50 ms/step and 20694
-    // minor faults/step - worse than not reusing at all, and it looked like
-    // reuse being a bad idea rather than like this line being wrong. Growing by
-    // a quarter turns thousands of steps into one allocation.
-    if (cache.reuse_scratch) {
-        if (cache.scratch_size < mem) {
-            cache.scratch_size = mem + mem / 4;
-            cache.scratch.reset(new char[cache.scratch_size]);
-        }
-        ip.mem_size   = cache.scratch_size;
-        ip.mem_buffer = cache.scratch.get();
-    }
-    ggml_context * ctx = ggml_init(ip);
-    if (!ctx) { err = "ggml_init failed (cached decoder)"; return false; }
-    const clk::time_point t_alloc1 = clk::now();
-    if (timing) {
-        timing->alloc = ms_between(t_alloc0, t_alloc1);
-        timing->arena = ip.mem_size;
-        timing->scratch_reused = cache.reuse_scratch;
+    // The step's compute allocator. Reused: gallocr keeps its buffer and grows
+    // it only when this step's graph genuinely needs more. Not reused (the
+    // [arena] pass): a fresh scheduler for this step alone, freed below.
+    ggml_backend_sched * sched = cache.sched;
+    ggml_backend_sched * fresh = nullptr;
+    if (!cache.reuse_scratch || !sched) {
+        fresh = nllb_new_sched(model);
+        if (!fresh) { err = "ggml_backend_sched_new failed (cached decoder)"; return false; }
+        sched = fresh;
     }
 
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_context * ctx = nllb_graph_ctx(cache.graph_meta);
+    if (!ctx) { if (fresh) ggml_backend_sched_free(fresh);
+                err = "ggml_init failed (cached decoder)"; return false; }
+
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
 
     ggml_tensor * inp_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Tn);
     ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Tn);
     ggml_set_name(inp_ids, "dec_ids");
     ggml_set_name(inp_pos, "dec_pos");
-    std::memcpy(inp_ids->data, new_ids.data(), Tn * sizeof(int32_t));
+    ggml_set_input(inp_ids);
+    ggml_set_input(inp_pos);
 
     // NLLB_POS_ABSOLUTE, and only that. HF's cached rule is
     // (cumsum(mask) + n_past) * mask + pad_id with the cumsum restarting each
@@ -1016,13 +1339,23 @@ bool nllb_decode_cached(const nllb_model & model,
     // evaluated from n_past alone (it depends on how many pads the prefix
     // contained), and reproducing it here would mean matching HF's *other*
     // path, so it is not offered. See nllb_pos_mode in nllb.h.
-    {
-        int32_t * p = (int32_t *) inp_pos->data;
-        for (int i = 0; i < Tn; ++i) {
-            const int32_t j = n_past + i;
-            p[i] = (new_ids[i] == hp.pad_id) ? hp.pad_id : j + 1 + hp.pad_id;
-        }
+    std::vector<int32_t> pos(Tn);
+    for (int i = 0; i < Tn; ++i) {
+        const int32_t j = n_past + i;
+        pos[i] = (new_ids[i] == hp.pad_id) ? hp.pad_id : j + 1 + hp.pad_id;
     }
+
+    // Query row j is absolute position n_past + j and may see keys
+    // 0..n_past + j. At Tn == 1 the correct offset masks nothing, and the error
+    // this hides is one-sided: an offset that is too LARGE still masks nothing
+    // and is invisible to single-token generation, while one that is too small
+    // masks a real key and is caught immediately (trap 13). That asymmetry is
+    // why tests/test_cache.cpp feeds the same prefix in chunks as well.
+    ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, Tn);
+    ggml_set_name(kq_mask, "kq_mask");
+    ggml_set_input(kq_mask);
+    std::vector<float> mask;
+    nllb_causal_mask(mask, n_kv, Tn, n_past);
 
     ggml_tensor * cur = ggml_get_rows(ctx, model.tok_embd, inp_ids);
     cur = ggml_scale(ctx, cur, hp.embd_scale);
@@ -1066,21 +1399,24 @@ bool nllb_decode_cached(const nllb_model & model,
         ggml_tensor * v_dst = ggml_view_3d(ctx, vc, Tn, HD, H,
                 vc->nb[1], vc->nb[2], (size_t) n_past * vc->nb[0]);
 
-        // ORDER MATTERS, and not in the way it first looks. These copies have
-        // no data dependency on the reads below, so only graph order makes the
-        // write happen first: ggml_graph_compute walks gf->nodes in insertion
-        // order, and ggml_build_forward_expand appends depth-first.
+        // ORDER MATTERS (trap 15). These copies have no data dependency on the
+        // reads below, so only graph order makes the write happen first: every
+        // backend walks gf->nodes in insertion order, and
+        // ggml_build_forward_expand appends depth-first. What protects this
+        // graph is that NOTHING downstream is expanded during the layer loop -
+        // `cur` and the logits enter the graph once, at the end - so the copies
+        // are the only nodes inserted here and land ahead of every read.
         //
-        // What actually protects this graph is that NOTHING downstream is
-        // expanded during the layer loop - `cur` and the logits enter the graph
-        // once, at the end - so the copies are the only nodes inserted here and
-        // land ahead of every read. Measured, not assumed: moving these two
-        // calls to the bottom of the block changes nothing (the reads are still
-        // expanded later), while expanding the actual kq node before them
-        // breaks 9 of 9 cases at layer 1. See claude/step5-cpp-kv-cache.md.
+        // Step 13 adds a reader of the node order that may REORDER it: Metal's
+        // graph_optimize moves nodes to raise concurrency. It is memory-range
+        // aware - it will not move a node that reads a range an earlier node
+        // writes - so the cpy and the mul_mat over the overlapping cache view
+        // keep their order. The chunked passes of the cache gate are what would
+        // say otherwise; GGML_METAL_GRAPH_OPTIMIZE_DISABLE=1 turns it off to
+        // bisect.
         //
-        // The rule to keep, therefore: do not expand anything that reads the
-        // cache before these two lines. A per-layer debug hook is exactly the
+        // The rule to keep: do not expand anything that reads the cache before
+        // these two lines. A per-layer debug hook is exactly the
         // innocent-looking change that would.
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Kp, k_dst));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));
@@ -1091,20 +1427,7 @@ bool nllb_decode_cached(const nllb_model & model,
                 vc->nb[1], vc->nb[2], 0);                           // (n_kv, HD, H)
 
         ggml_tensor * kq = ggml_mul_mat(ctx, Kv, Q);                // (n_kv, Tn, H)
-        // n_past stops being 0 here. Query row j is absolute position
-        // n_past + j and may see keys 0..n_past + j; ggml_diag_mask_inf masks
-        // exactly i > n_past + j.
-        //
-        // At Tn == 1 the correct offset masks nothing, and the error this hides
-        // is one-sided: an offset that is too LARGE still masks nothing and is
-        // invisible to single-token generation (n_past + 1 passes every case of
-        // the step comparison and fails the multi-token ones), while an offset
-        // that is too small masks a real key and is caught immediately. That
-        // asymmetry is why tests/test_cache.cpp feeds the same prefix in chunks
-        // of more than one token as well as one at a time - single-token
-        // stepping alone cannot test this line.
-        kq = ggml_diag_mask_inf(ctx, kq, n_past);
-        kq = ggml_soft_max_ext(ctx, kq, nullptr, 1.0f, 0.0f);
+        kq = ggml_soft_max_ext(ctx, kq, kq_mask, 1.0f, 0.0f);
         ggml_tensor * kqv = ggml_mul_mat(ctx, Vv, kq);              // (HD, Tn, H)
 
         kqv = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));   // (HD, H, Tn)
@@ -1145,6 +1468,7 @@ bool nllb_decode_cached(const nllb_model & model,
     cur = ggml_norm(ctx, cur, hp.eps);
     cur = ggml_add(ctx, ggml_mul(ctx, cur, model.dec_out_norm_w), model.dec_out_norm_b);
     ggml_set_name(cur, "dec_out");
+    ggml_set_output(cur);
     hs.push_back(cur);
 
     ggml_tensor * logits = nullptr;
@@ -1156,62 +1480,71 @@ bool nllb_decode_cached(const nllb_model & model,
         }
         logits = ggml_mul_mat(ctx, model.lm_head(), lm_in);
         ggml_set_name(logits, "logits");
+        ggml_set_output(logits);
         ggml_build_forward_expand(gf, logits);
     }
 
     ggml_build_forward_expand(gf, cur);
     if (want_hidden_states) {
-        for (ggml_tensor * t : hs) ggml_build_forward_expand(gf, t);
+        for (ggml_tensor * t : hs) { ggml_set_output(t); ggml_build_forward_expand(gf, t); }
     }
 
     const clk::time_point t_build1 = clk::now();
     if (timing) {
-        timing->build   = ms_between(t_alloc1, t_build1);
+        timing->build   = ms_between(t_enter, t_build1);
         timing->n_nodes = ggml_graph_n_nodes(gf);
+        timing->scratch_reused = fresh == nullptr;
     }
 
-    const ggml_status st = ggml_graph_compute_with_ctx(ctx, gf, n_threads);
-    if (st != GGML_STATUS_SUCCESS) {
-        err = "ggml_graph_compute failed (cached decoder), status " + std::to_string((int) st);
-        ggml_free(ctx);
-        return false;
+    bool ok = nllb_alloc_graph(sched, gf, "cached step", err);
+    const clk::time_point t_alloc1 = clk::now();
+    if (timing) {
+        timing->alloc = ms_between(t_build1, t_alloc1);
+        timing->arena = nllb_sched_bytes(sched);
+    }
+    if (ok) {
+        ggml_backend_tensor_set(inp_ids, new_ids.data(), 0, (size_t) Tn * sizeof(int32_t));
+        ggml_backend_tensor_set(inp_pos, pos.data(),     0, (size_t) Tn * sizeof(int32_t));
+        ggml_backend_tensor_set(kq_mask, mask.data(),    0, mask.size() * sizeof(float));
+        ok = nllb_compute_graph(model, sched, gf, n_threads, "cached decoder", err);
     }
     const clk::time_point t_compute1 = clk::now();
-    if (timing) timing->compute = ms_between(t_build1, t_compute1);
+    if (timing) timing->compute = ms_between(t_alloc1, t_compute1);
 
-    out.n_tokens = Tn;
-    out.d_model  = D;
-    out.n_vocab  = (int32_t) model.lm_head()->ne[1];
-    out.output.resize((size_t) Tn * D);
-    std::memcpy(out.output.data(), cur->data, out.output.size() * sizeof(float));
+    if (ok) {
+        out.n_tokens = Tn;
+        out.d_model  = D;
+        out.n_vocab  = (int32_t) model.lm_head()->ne[1];
+        nllb_get_f32(cur, out.output, (size_t) Tn * D);
 
-    out.logits.clear();
-    out.n_logit_rows = 0;
-    if (want_logits) {
-        out.n_logit_rows = logit_rows;
-        out.logits.resize((size_t) logit_rows * out.n_vocab);
-        std::memcpy(out.logits.data(), logits->data, out.logits.size() * sizeof(float));
-    }
+        out.logits.clear();
+        out.n_logit_rows = 0;
+        if (want_logits) {
+            out.n_logit_rows = logit_rows;
+            nllb_get_f32(logits, out.logits, (size_t) logit_rows * out.n_vocab);
+        }
 
-    out.hidden_states.clear();
-    if (want_hidden_states) {
-        out.hidden_states.resize(hs.size());
-        for (size_t i = 0; i < hs.size(); ++i) {
-            out.hidden_states[i].resize((size_t) Tn * D);
-            std::memcpy(out.hidden_states[i].data(), hs[i]->data,
-                        out.hidden_states[i].size() * sizeof(float));
+        out.hidden_states.clear();
+        if (want_hidden_states) {
+            out.hidden_states.resize(hs.size());
+            for (size_t i = 0; i < hs.size(); ++i) {
+                nllb_get_f32(hs[i], out.hidden_states[i], (size_t) Tn * D);
+            }
         }
     }
 
     const clk::time_point t_read1 = clk::now();
     if (timing) timing->readback = ms_between(t_compute1, t_read1);
 
+    ggml_backend_sched_reset(sched);
+    if (fresh) ggml_backend_sched_free(fresh);
     ggml_free(ctx);
 
     if (timing) {
         timing->release = ms_between(t_read1, clk::now());
         timing->total   = ms_between(t_enter, clk::now());
     }
+    if (!ok) return false;
 
     // Only now, after the graph really ran: a caller that retries after a
     // failure must not find the cache half-advanced.

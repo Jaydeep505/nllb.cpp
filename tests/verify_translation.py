@@ -248,8 +248,16 @@ def parse_ids(stderr: str):
     return out
 
 
+# --backend NAME, passed to every invocation. Empty means the CLI's own
+# default, which since step 13 is "auto" - i.e. Metal on a Mac built with it.
+# That is deliberate (this gate tests the PRODUCT), but it means the same
+# command tests different kernels on different machines, so the header line
+# prints which backend actually ran and step 13's acceptance runs it both ways.
+BACKEND: list[str] = []
+
+
 def run(cli, model, args, stdin=None, threads=4):
-    cmd = [cli, "-m", model, "-t", str(threads)] + args
+    cmd = [cli, "-m", model, "-t", str(threads)] + BACKEND + args
     p = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
     return p
 
@@ -297,6 +305,9 @@ def main() -> int:
     ap.add_argument("model", help="the SAME GGUF the goldens were dumped from")
     ap.add_argument("ref", type=Path, nargs="?", default=Path("ref"))
     ap.add_argument("-t", "--threads", type=int, default=4)
+    ap.add_argument("--backend", default="",
+                    help="passed to nllb-cli --backend (cpu, metal, auto). "
+                         "Default: the CLI's own default, auto")
     ap.add_argument("--goldens", default="translations.txt")
     ap.add_argument("--no-golden", action="store_true")
     ap.add_argument("--no-stdin", action="store_true")
@@ -312,6 +323,9 @@ def main() -> int:
                     help="worst-segment chrF floor under --allow-id-drift "
                          "(default 75)")
     args = ap.parse_args()
+
+    if args.backend:
+        BACKEND[:] = ["--backend", args.backend]
 
     if not Path(args.cli).exists():
         raise SystemExit(f"no such binary: {args.cli}  (cmake --build build -j)")
@@ -329,6 +343,13 @@ def main() -> int:
     print(f"dumped from: {header.get('model')}  num_beams="
           f"{header.get('num_beams')} (checkpoint default: "
           f"{header.get('generation_config_num_beams')})")
+    # Which kernels this run is actually testing (step 13). One -v call; the
+    # CLI prints `backend: NAME` on stderr. A stand-in that does not is fine.
+    if cases:
+        pb = run(args.cli, args.model, base + ["-v", cases[0]["source"]], threads=args.threads)
+        be = re.search(r"^backend: (.*)$", pb.stderr, re.M)
+        print(f"backend:  {be.group(1) if be else '(not reported by this binary)'}"
+              f"{'  [--backend ' + args.backend + ']' if args.backend else '  [CLI default]'}")
     if header.get("pipeline_agrees") is False:
         print("WARNING: the dumper recorded that pipeline() and "
               "generate()+batch_decode() disagreed.")

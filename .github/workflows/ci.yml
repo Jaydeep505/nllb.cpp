@@ -154,6 +154,42 @@ jobs:
           ./build/bin/nllb-test-cache    models/deep-f16.gguf ref-deep/ -t 4
           ./build/bin/nllb-test-cache    models/deep-f16.gguf ref-pad/  -t 4
 
+      - name: Backend port - no host-pointer access to graph tensors (step 13)
+        # On a device backend a tensor's ->data is a handle, not a pointer, and
+        # the CPU backend cannot tell the difference: its buffers are host
+        # memory, so a stray dereference WORKS here and is garbage on Metal.
+        # tests/corrupt_backend.py proves that (mask-through-data is inert on
+        # the CPU). This runner has no GPU, so the rule is enforced by reading
+        # the source instead: no code line in the library or the CLI may touch
+        # ->data. Comments are allowed to talk about it.
+        run: |
+          if grep -nE -- '->data' src/*.cpp cli/*.cpp | grep -vE '^[^:]+:[0-9]+:\s*//'; then
+            echo "::error::->data used in src/ or cli/ - use ggml_backend_tensor_set/_get"
+            exit 1
+          fi
+
+      - name: Backend port - a named backend that is absent must FAIL, not fall back
+        # --backend auto falls back to the CPU. --backend metal must not: a user
+        # who asked for the GPU and silently got the CPU would benchmark the
+        # wrong thing. This runner has no Metal, so the request must be refused.
+        run: |
+          ./build/bin/nllb-cli --list-backends
+          if ./build/bin/nllb-cli -m models/tiny-f32.gguf --backend metal --tgt deu_Latn "x" 2> /tmp/be.txt; then
+            echo "::error::--backend metal succeeded on a machine without Metal"; exit 1
+          fi
+          grep -q "not available in this build" /tmp/be.txt
+
+      - name: Backend port - corruption matrix (gallocr outputs, the mask, trap 15)
+        # Seven mutations of src/nllb.cpp aimed at what the port introduced:
+        # a hidden state not marked as an output, the causal mask as data, the
+        # cache write ordered after its read. Two are REPORTED, not asserted
+        # (an input written through ->data, an input not flagged as one): they
+        # work by accident on host memory, which is why the grep above exists.
+        # Run at both precisions: the table must not change with the weight type.
+        run: |
+          python tests/corrupt_backend.py build models/deep-f32.gguf ref-deep/ -t 4
+          python tests/corrupt_backend.py build models/deep-f16.gguf ref-deep/ -t 4
+
       - name: Profiler smoke test - nllb-bench must still run
         # Not a gate on any number: the sandbox and the runner are too noisy for
         # a time to assert on, and the numbers that matter were taken at the
@@ -245,3 +281,49 @@ jobs:
       # fetch ONLY tokenizer.json (17 MB, no weights) and run
       # tests/make_vocab_gguf.py - at the cost of this workflow depending on
       # huggingface.co, which is the thing it was built not to do.
+
+  # ---------------------------------------------------------------------------
+  # Metal (step 13). UNVERIFIED IN CI, hence continue-on-error: GitHub's
+  # macOS arm64 runners expose a paravirtualised GPU, and whether ggml-metal
+  # initialises on it has not been observed from this repo. What this job runs
+  # needs no torch and no download - a small random GGUF with the shape model
+  # tooling - and every comparison in it is C++ against C++:
+  #   nllb-test-cache      full = exact ON METAL: the cache vs the un-cached
+  #                        path, both on the GPU (the un-cached one also
+  #                        exercises the CPU fallback for ggml_diag_mask_inf)
+  #   nllb-test-precision  --backend cpu:metal, same file twice: exact ids and
+  #                        the margin audit, the claim f16 made against f32
+  # The acceptance run is on a real M1 with the real checkpoint; see BACKEND.md.
+  # ---------------------------------------------------------------------------
+  metal:
+    runs-on: macos-14
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+          ./build/bin/nllb-cli --list-backends
+      - name: Small shape fixture
+        run: |
+          pip install numpy gguf
+          python tests/make_shape_model.py models/small-f16.gguf --d-model 256 \
+              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 512 --vocab 4000 --n-ctx 128 --outtype f16
+          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 128 --max-new 24
+      - name: Cache gate on Metal
+        run: |
+          NLLB_ARENA_TRACE=1 NLLB_BACKEND=metal ./build/bin/nllb-test-cache models/small-f16.gguf ref-small/ -t 3
+      - name: CPU vs Metal - exact ids and the margin audit
+        run: |
+          ./build/bin/nllb-test-precision models/small-f16.gguf models/small-f16.gguf ref-small/ \
+              -t 3 --backend cpu:metal
+      - name: Backend port corruption matrix ON METAL - the same table as on the CPU?
+        run: |
+          NLLB_BACKEND=metal python tests/corrupt_backend.py build models/small-f16.gguf ref-small/ -t 3

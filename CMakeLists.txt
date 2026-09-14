@@ -16,9 +16,10 @@
 # notice is a bench number that means nothing.
 #
 # On macOS the configure step finds Accelerate, BLAS and Metal and links them.
-# Seeing "Including METAL backend" does NOT mean anything runs on the GPU -
-# nllb.cpp calls ggml_graph_compute_with_ctx, which is the CPU executor. The
-# verified path is CPU.
+# Since step 13 Metal IS used: every graph goes through ggml_backend_sched, and
+# nllb-cli defaults to --backend auto (Metal when present). The LIBRARY default
+# is still the CPU, so every gate means what it meant unless NLLB_BACKEND=metal
+# is set. BLAS is linked and never scheduled. See BACKEND.md.
 #
 # ---------------------------------------------------------------------------
 # WHAT GETS BUILT, and what each one claims
@@ -38,6 +39,8 @@
 #   bin/nllb-test-tokenizer  text -> ids vs HF, exact, 5 passes
 #   bin/nllb-test-mmap       mmap vs read: every weight byte identical
 #   bin/nllb-bench           where the cached step goes.  --kv-f16
+#   bin/nllb-dump-states     everything the API computes, as bytes; --diff two
+#                            BUILDS. How step 13 was held to bit-identity.
 #
 # The gates run in one command: ./tools/step10_measure.sh
 # Everything above is documented in claude/handoff.md; the trap numbers refer
@@ -131,3 +134,12 @@ add_executable(nllb-test-precision tests/test_precision.cpp)
 target_link_libraries(nllb-test-precision PRIVATE nllb)
 target_compile_options(nllb-test-precision PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-precision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# Not a gate on its own: dumps everything the public API computes as raw bytes,
+# so two BUILDS can be compared with `nllb-dump-states --diff a.bin b.bin`. That
+# is how the step-13 backend port was held to bit-identity against the old CPU
+# path, and it is the instrument for a ggml submodule bump.
+add_executable(nllb-dump-states tests/dump_states.cpp)
+target_link_libraries(nllb-dump-states PRIVATE nllb)
+target_compile_options(nllb-dump-states PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-dump-states PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

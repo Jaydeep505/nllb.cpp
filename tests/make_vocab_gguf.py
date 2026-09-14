@@ -118,6 +118,8 @@ def main() -> None:
         w.add_array(f"tokenizer.{ARCH}.gcb_ranges", gcb)
         w.add_array(f"tokenizer.{ARCH}.extpict_ranges", ext)
         w.add_string(f"tokenizer.{ARCH}.ucd_version", ucd)
+    if meta.get("merges_list") is not None:
+        w.add_array(f"tokenizer.{ARCH}.merges", meta["merges_list"])
     w.add_uint64(f"tokenizer.{ARCH}.merges_hash", meta["merges_hash"])
     w.add_uint32(f"tokenizer.{ARCH}.n_merges", meta["n_merges"])
     w.add_string(f"tokenizer.{ARCH}.merges_hash_source",

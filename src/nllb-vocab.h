@@ -40,10 +40,14 @@ struct nllb_vocab {
     std::unordered_map<std::string, int32_t>     ids;     // piece -> id
 
     // BPE merges, keyed by (left id << 32 | right id). `rank` is the position
-    // in HuggingFace's merge list; lower wins. These are DERIVED from the
-    // vocabulary order at load time and checked against `merges_hash`.
+    // in HuggingFace's merge list; lower wins. Normally DERIVED from the
+    // vocabulary order at load time; read verbatim from
+    // `tokenizer.nllb.merges` when the file carries it, which is what a
+    // trimmed or extended vocabulary needs. Either way `merges_hash` checks
+    // the result.
     struct merge { uint32_t rank; int32_t id; };
     std::unordered_map<uint64_t, merge>          merges;
+    bool                                         merges_from_file = false;
 
     // HuggingFace's AddedVocabulary: 207 strings - the four control tokens,
     // the 202 FLORES codes and <mask> - that are cut out of the input BEFORE

@@ -9,6 +9,9 @@
 struct ggml_context;
 struct ggml_tensor;
 struct gguf_context;
+struct ggml_backend;
+struct ggml_backend_buffer;
+struct ggml_backend_sched;
 
 struct nllb_hparams {
     int32_t d_model     = 0;
@@ -82,8 +85,42 @@ struct nllb_model {
     ggml_tensor * output_w = nullptr;
     std::vector<nllb_dec_layer> dec;
 
-    ggml_context * ctx_w = nullptr;
+    ggml_context * ctx_w = nullptr;   // tensor STRUCTS only; the bytes live in weights_buf
     gguf_context * gguf  = nullptr;
+
+    // ---- execution (step 13: ggml-backend) ------------------------------
+    //
+    // `backend` is where the graphs run and where the weights and the KV cache
+    // live: Metal when it was asked for and exists, otherwise the CPU. The CPU
+    // backend is ALWAYS created as well and is always the LAST backend in the
+    // scheduler, which is what makes it the fallback: an op the primary
+    // backend does not implement is run on the CPU by ggml_backend_sched,
+    // with the copies in and out inserted for it. With the CPU as primary the
+    // two are the same object and the scheduler has one backend.
+    //
+    // On a device backend a ggml_tensor's ->data is a handle, not a pointer.
+    // Nothing in src/ or tests/ may dereference it for a graph tensor; inputs
+    // go in through ggml_backend_tensor_set and results come out through
+    // ggml_backend_tensor_get. The CPU backend would not notice a violation -
+    // its buffers are host memory - which is why that rule is written here.
+    ggml_backend * backend     = nullptr;   // primary
+    ggml_backend * backend_cpu = nullptr;   // fallback, and where n_threads applies
+    std::string    backend_name;            // ggml's name for the primary, e.g. "CPU", "MTL0"
+    bool           on_cpu      = true;      // backend == backend_cpu
+    ggml_backend_buffer * weights_buf = nullptr;
+    bool           weights_host_ptr   = false;   // the buffer wraps the mapping, zero-copy
+
+    // The compute allocator for the one-shot graphs (encoder, un-cached
+    // decoder, cross-attention cache build). ggml_gallocr underneath: it sizes
+    // the buffer from the graph's actual tensor lifetimes and grows it when a
+    // larger graph arrives, so the hand-written arena formulas of steps 2-6 are
+    // gone. It is mutable because it is a workspace, not model state - and it
+    // makes one nllb_model unsafe to use from two threads at once, which the
+    // bump arenas were not. Use one model per thread.
+    mutable ggml_backend_sched * sched = nullptr;
+    // Metadata memory for those graphs' contexts (tensor structs + the graph,
+    // never data), kept so a call does not malloc ~3 MB of it each time.
+    mutable std::vector<unsigned char> graph_meta;
 
     // When the weights are mmap'ed, ctx_w owns only the ggml_tensor STRUCTS
     // and every ->data points into this read-only mapping of the file. When
@@ -121,8 +158,25 @@ struct nllb_encode_result {
 // It falls back to reading, with mapped=false, when the platform has no mmap
 // or the file's alignment does not permit it. Nothing above this call has to
 // care which happened.
+//
+// `backend` picks where the graphs run (step 13):
+//   "cpu"          ggml's CPU backend. The configuration every claim in
+//                  claude/handoff.md was measured on, and bit-identical to the
+//                  pre-backend CPU path (nllb-dump-states --diff).
+//   "metal", "gpu" the first GPU device in this build; FAILS if there is none.
+//   "auto"         the first GPU device if there is one, else the CPU.
+//   a device name  as ggml names it, e.g. "MTL0", "Vulkan0", "CPU".
+//   ""             $NLLB_BACKEND if set, else "cpu".
+// The library default is the CPU for the same reason use_cache defaults to
+// false: a default that silently moved every gate onto different kernels
+// would make every gate stop testing what its name says. nllb-cli defaults to
+// "auto" - it is the product, and the product should use the GPU.
 bool nllb_model_load(const std::string & path, nllb_model & model, std::string & err,
-                     bool use_mmap = true);
+                     bool use_mmap = true, const std::string & backend = "");
+
+// Every device this build of ggml can run on, one "name - description (type)"
+// per entry. For --list-backends.
+std::vector<std::string> nllb_list_backends();
 
 bool nllb_encode(const nllb_model & model,
                  const std::vector<int32_t> & ids,
@@ -257,7 +311,8 @@ enum nllb_kv_type {
 };
 
 struct nllb_kv_cache {
-    ggml_context * ctx = nullptr;   // owns the four tensor sets below
+    ggml_context * ctx = nullptr;          // owns the four tensor sets below (structs only)
+    ggml_backend_buffer * buf = nullptr;   // the K/V bytes, in the model's primary backend
 
     // NLLB_KV_F32 or NLLB_KV_F16. Set by nllb_kv_cache_init and read by
     // nllb_decode_cached only through the tensors themselves, which carry
@@ -276,37 +331,29 @@ struct nllb_kv_cache {
     std::vector<ggml_tensor *> k_cross;   // per layer, [HD, n_src, H]
     std::vector<ggml_tensor *> v_cross;   // per layer, [n_src, HD, H]  (transposed)
 
-    // Per-step graph arena, kept across steps. NOT cache state - it holds no
-    // K or V and nllb_kv_cache_reset does not touch it - but the cache is the
-    // object that already lives exactly as long as the decode loop, which is
-    // the lifetime this buffer wants.
+    // The per-step compute allocator, kept across steps. It replaces step 6's
+    // bump arena (`scratch`), and what it holds is the same kind of thing: NOT
+    // cache state - no K or V, and nllb_kv_cache_reset does not touch it - but
+    // the cache is the object that already lives exactly as long as the decode
+    // loop, which is the lifetime this workspace wants.
     //
-    // Why it is here at all: ggml_init(mem_buffer = nullptr) mallocs ~80 MB per
-    // step, glibc serves that size with a fresh mmap, and the kernel must
-    // zero-fill each page on first touch. That cost does not show up under
-    // ggml_init - it shows up inside ggml_graph_compute, mixed in with the
-    // arithmetic and indistinguishable from it. Keeping one mapping means the
-    // pages are faulted in once instead of once per token.
+    // It is a ggml_backend_sched, so underneath it is ggml_gallocr, which is
+    // the point of step 13's memory argument: the buffer is sized from the
+    // step graph's real tensor lifetimes, reusing memory between tensors that
+    // are never live at once, instead of from a formula with a 64 MB constant
+    // in it. It grows when n_kv grows past what it was sized for, so trap 18's
+    // "exact fit reallocates every step" does not arise - gallocr only
+    // reallocates when the graph genuinely needs more.
     //
-    // IT IS DELIBERATELY NOT PRE-ZEROED, and that is the whole difference
-    // between this being a win and a loss. The arena is sized for the worst
-    // case but a step touches only ~4 MB of it, so pre-touching all 80 MB pays
-    // for 20x the pages the work needs: measured, that costs ~360 ms up front
-    // against a ~4 ms/step saving, which does not break even until ~90 tokens -
-    // longer than most translations. Handing over an UNTOUCHED buffer lets the
-    // first step fault in exactly the pages it uses and every later step find
-    // them warm, which is the same win with no up-front bill.
-    //
-    // ONE CONSEQUENCE WORTH KNOWING. A fresh mmap reads as zero, so an op that
-    // read graph memory it had not written would silently see zeros today, and
-    // see the PREVIOUS STEP's values once the arena is reused. That is a real
-    // change in what a latent bug would do. The gate that catches it is the
-    // `full = exact` assertion in tests/test_cache.cpp: one cached call over
-    // the whole prefix, held to bit-identity against the un-cached pass, which
-    // no stale read survives.
-    std::unique_ptr<char[]> scratch;
-    size_t scratch_size = 0;
+    // reuse_scratch = false builds a FRESH scheduler every step and frees it
+    // after. That is the [arena] pass in tests/test_cache.cpp, and it matters
+    // more under gallocr than it did under the bump arena: gallocr reuses
+    // memory WITHIN a graph as well as across steps, so an op reading a tensor
+    // it never wrote now sees some other tensor's values even on step one.
+    ggml_backend_sched * sched = nullptr;
+    std::vector<unsigned char> graph_meta;   // the step graph's metadata, reused too
     bool   reuse_scratch = true;
+    const nllb_model * model = nullptr;   // the backends the step scheduler is built on
 
     nllb_kv_cache() = default;
     ~nllb_kv_cache();
@@ -343,21 +390,25 @@ void nllb_kv_cache_reset(nllb_kv_cache & cache);
 // derived from weight sizes rather than from a clock, and acting on arithmetic
 // like that is how an optimisation gets aimed at the wrong line.
 //
-// Read `alloc` and `compute` together. With mem_buffer = nullptr, ggml_init is
-// a malloc that does not touch the pages it returns, so the fault cost of a
-// fresh 72 MB arena is NOT in `alloc` - it lands inside `compute`, mixed in
-// with the arithmetic and indistinguishable from it. `scratch_reused` says
-// which of the two the numbers describe: false means those faults are still
-// hiding in `compute`, true means the arena was warm and `compute` is closer to
-// arithmetic alone. The difference between two runs is the page-fault bill.
+// Read `alloc` and `compute` together. A freshly allocated compute buffer is
+// untouched memory, so its page-fault cost is NOT in `alloc` - it lands inside
+// `compute`, mixed in with the arithmetic (trap 17). `scratch_reused` says
+// which of the two the numbers describe: false means a fresh scheduler per
+// step, so those faults are still hiding in `compute`; true means the buffer
+// was warm. The difference between two runs is the page-fault bill.
+//
+// Step 13 changed what two fields mean, not their names: `alloc` is now
+// ggml_backend_sched_alloc_graph (graph split + gallocr placement, which can
+// grow the buffer), and `arena` is the scheduler's real compute buffer size,
+// summed over backends - a number the allocator computed, not a formula.
 struct nllb_step_timing {
-    double alloc    = 0.0;   // ggml_init: the arena itself
+    double alloc    = 0.0;   // ggml_backend_sched_alloc_graph
     double build    = 0.0;   // graph construction, no arithmetic
-    double compute  = 0.0;   // ggml_graph_compute_with_ctx
-    double readback = 0.0;   // memcpy of outputs, logits and hidden states
-    double release  = 0.0;   // ggml_free
+    double compute  = 0.0;   // ggml_backend_sched_graph_compute (synchronised)
+    double readback = 0.0;   // ggml_backend_tensor_get of outputs, logits, states
+    double release  = 0.0;   // sched reset + ggml_free of the graph metadata
     double total    = 0.0;
-    size_t arena    = 0;     // bytes ggml_init was asked for
+    size_t arena    = 0;     // compute buffer bytes, all backends
     int    n_nodes  = 0;     // graph size, for the per-node cost of building
     bool   scratch_reused = false;
 };
