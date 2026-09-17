@@ -58,7 +58,62 @@ endif()
 # vendored ggml - no external dependencies
 set(GGML_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+# ---------------------------------------------------------------------------
+# OPENCL (step 14).  -DNLLB_OPENCL=ON
+# ---------------------------------------------------------------------------
+# ggml's own switch is GGML_OPENCL and it works unchanged, because ggml is
+# add_subdirectory'd above and reads its options out of the same cache. This
+# flag exists on top of it for one reason: ggml's OPENCL DEFAULTS ARE ADRENO
+# DEFAULTS, and taking them on anything else produces a build that configures,
+# compiles, and then either refuses the device at runtime or runs kernels
+# written for a GPU this is not.  GGML_OPENCL_USE_ADRENO_KERNELS is ON by
+# default upstream; here the portable value is OFF and -DNLLB_ADRENO=ON is how
+# you ask for it back.
+#
+#   cmake -B build -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release   # portable
+#   cmake -B build -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON ...         # Snapdragon
+#
+# What the device must have, checked by ggml at registration and NOT by this
+# file: cl_khr_fp16, and - on an OpenCL 3.0 device, where subgroups became
+# optional - cl_khr_subgroups or cl_intel_subgroups. A device missing either is
+# dropped with a warning on stderr and the registry then has no OpenCL device
+# in it, so `--backend opencl` fails with the device list (trap 49's message)
+# rather than with anything about extensions. Read the ggml_opencl: lines.
+# Measured: pocl 5.0 has the subgroups and NOT fp16, so it is dropped; Intel's
+# CPU runtime has both and is picked up. See BACKEND.md.
+#
+# Kernels are EMBEDDED by default (ggml's default too, kept deliberately): with
+# GGML_OPENCL_EMBED_KERNELS=OFF ggml copies .cl files next to the binary at
+# configure time and loads them by relative path at runtime, which makes the
+# binary non-relocatable. This project ships one file that carries everything
+# it needs - that is the step-8 argument about the grapheme tables, and it
+# applies to kernels for the same reason.
+option(NLLB_OPENCL "nllb: build the ggml OpenCL backend"            OFF)
+option(NLLB_ADRENO "nllb: use ggml's Adreno-optimised OpenCL kernels" OFF)
+
+if(NLLB_OPENCL)
+    set(GGML_OPENCL                    ON          CACHE BOOL   "" FORCE)
+    set(GGML_OPENCL_EMBED_KERNELS      ON          CACHE BOOL   "" FORCE)
+    set(GGML_OPENCL_USE_ADRENO_KERNELS ${NLLB_ADRENO} CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_TARGET_VERSION     "300"       CACHE STRING "" FORCE)
+    message(STATUS "nllb: OpenCL backend ON (adreno kernels: ${NLLB_ADRENO})")
+endif()
+
 add_subdirectory(vendor/ggml)
+
+# ggml registers its backends at runtime and a missing one is a runtime
+# failure, not a link error - so say at CONFIGURE time what this build will and
+# will not be able to schedule. The step-13 failure that cost the most time was
+# a device that was present and not FOUND, and the fix started with printing
+# what was there.
+if(NLLB_OPENCL AND NOT TARGET ggml-opencl)
+    message(FATAL_ERROR
+        "NLLB_OPENCL=ON but ggml did not build its OpenCL backend. Its "
+        "find_package(OpenCL REQUIRED) needs headers and an ICD loader: "
+        "apt install opencl-headers ocl-icd-opencl-dev (Linux), or point "
+        "-DOpenCL_INCLUDE_DIR / -DOpenCL_LIBRARY at them. See BUILD.md.")
+endif()
 
 # Warnings on OUR targets only - vendor/ggml is added above and keeps its own
 # flags. This is not housekeeping: the [arena] report in tests/test_cache.cpp
@@ -129,6 +184,34 @@ add_executable(nllb-quantize tools/nllb-quantize.cpp)
 target_link_libraries(nllb-quantize PRIVATE ggml)
 target_compile_options(nllb-quantize PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-quantize PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# ocl-probe. NOT a gate and not linked against nllb or ggml - it links the
+# OpenCL ICD loader alone, on purpose, so that when it disagrees with ggml the
+# fault is in ggml and when it agrees the fault is in the runtime. Built only
+# with the backend, since without it there is no OpenCL to find.
+#
+# It answers the two questions step 14 needed and clinfo cannot: will ggml
+# REGISTER this device (extensions), and will ggml's kernels COMPILE on it
+# (a half math builtin under -cl-fast-relaxed-math). Those fail at different
+# stages and the second one looks like success until it does not.
+if(NLLB_OPENCL)
+    # ggml's own find_package(OpenCL) ran inside add_subdirectory, so its
+    # result variables are in THAT directory's scope and are empty here. Ask
+    # again - it is cached, so this costs nothing and is not a second search.
+    find_package(OpenCL REQUIRED)
+    add_executable(ocl-probe tools/ocl-probe.c)
+    # HEADERS ONLY - no link against the ICD loader. The probe dlopen()s the
+    # loader at runtime, so it can be cross-compiled for a phone without
+    # first cross-compiling an ICD loader for that phone, which is the
+    # dependency you would otherwise have to build BEFORE finding out whether
+    # the device works at all. On Linux/Android that needs libdl.
+    target_include_directories(ocl-probe PRIVATE ${OpenCL_INCLUDE_DIRS})
+    if(NOT WIN32)
+        target_link_libraries(ocl-probe PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+    target_compile_options(ocl-probe PRIVATE ${NLLB_WARN})
+    set_target_properties(ocl-probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
 
 add_executable(nllb-test-precision tests/test_precision.cpp)
 target_link_libraries(nllb-test-precision PRIVATE nllb)

@@ -121,10 +121,23 @@ int main(int argc, char ** argv) {
     // "mmap is correct here" about a run in which mmap never happened. The
     // step-4 SKIP lesson.
     if (!mapped.mapped) {
+        // Three causes, and step 14 added the third. Name the backend, because
+        // on a device that cannot wrap host memory this gate is red for a
+        // reason that is not a defect and the message decides whether that
+        // costs five seconds or an afternoon - trap 49's lesson, which is that
+        // the fix starts with printing what you DID find.
         std::fprintf(stderr,
             "the mmap path fell back to reading, so the two loads are the same\n"
-            "code and this comparison is vacuous. Either the platform has no\n"
-            "mmap, or the file's general.alignment does not permit mapping.\n");
+            "code and this comparison is vacuous. On backend '%s'. Causes, in\n"
+            "the order worth checking:\n"
+            "  1. the backend cannot wrap host memory (buffer_from_host_ptr),\n"
+            "     so nllb_model_load unmaps on purpose and copies instead.\n"
+            "     MEASURED TRUE OF OPENCL. There is nothing to fix and nothing\n"
+            "     to assert: run this gate on the CPU, where the claim lives.\n"
+            "  2. the platform has no mmap (the Windows branch is a fallback).\n"
+            "  3. the file's general.alignment does not permit mapping.\n"
+            "NLLB_LOAD_TRACE=1 prints which of the three it was.\n",
+            mapped.backend_name.c_str());
         return 1;
     }
 

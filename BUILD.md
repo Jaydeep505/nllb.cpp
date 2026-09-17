@@ -37,6 +37,97 @@ On your Mac ggml will pick up Accelerate and Metal automatically. The encoder
 path here is CPU-only f32; that is deliberate for now, since the point is
 correctness, not speed.
 
+### OpenCL (step 14)
+
+```bash
+cmake -B build -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+./build/bin/nllb-cli --list-backends          # expect a GPUOpenCL line
+```
+
+`-DGGML_OPENCL=ON` also works, because ggml is `add_subdirectory`'d and reads
+the same cache. `NLLB_OPENCL` exists on top of it to change one default:
+**ggml's OpenCL defaults are Adreno defaults.** `GGML_OPENCL_USE_ADRENO_KERNELS`
+is ON upstream; this flag sets it OFF and `-DNLLB_ADRENO=ON` asks for it back.
+Kernels stay embedded (ggml's default, kept deliberately — with
+`GGML_OPENCL_EMBED_KERNELS=OFF` ggml copies `.cl` files next to the binary and
+loads them by relative path, which makes the binary non-relocatable; one file
+carrying everything it needs is the step-8 argument about the grapheme tables,
+and it applies to kernels for the same reason).
+
+**What the device must have**, checked by ggml at registration and by nothing in
+this repo: `cl_khr_fp16`, and — on an OpenCL 3.0 device, where subgroups became
+optional — `cl_khr_subgroups` or `cl_intel_subgroups`. A device missing either
+is dropped with a `ggml_opencl:` warning on **stderr** and the registry then has
+no OpenCL device in it, so `--backend opencl` fails with the device list rather
+than with anything about extensions. **Read the `ggml_opencl:` lines before
+believing the device list.**
+
+Two further things measured in step 14, both about the runtime rather than about
+this project:
+
+* **ggml compiles its ENTIRE kernel set at backend init**, not lazily per op. So
+  an OpenCL implementation with one gap anywhere fails at init, even for a model
+  that would never reach the kernel in question — NLLB uses no GLU, and a
+  missing `exp(half)` in `glu.cl` still takes the whole backend down.
+* **ggml builds every kernel with `-cl-fast-relaxed-math`** (plus `-cl-mad-enable
+  -cl-unsafe-math-optimizations -cl-finite-math-only`). That is not neutral: on
+  Intel's CPU OpenCL runtime `exp(half)` compiles without the flag and fails to
+  link with it. If kernel compilation fails, reproduce it in four lines against
+  the raw ICD with those exact options before suspecting ggml.
+
+**ggml enumerates devices on ONE platform only.** With more than one ICD
+installed, the platform it picks may not be the one you want, and the other one's
+devices are then invisible rather than merely unselected. `GGML_OPENCL_PLATFORM`
+and `GGML_OPENCL_DEVICE` (substring match, or an index) override it:
+
+```bash
+GGML_OPENCL_PLATFORM="Intel(R) OpenCL" ./build/bin/nllb-cli --list-backends
+```
+
+**Snapdragon X Elite / Adreno X85 via Qualcomm Device Cloud: see
+`QDC-XELITE.md`** — cross-compiling from x64 Windows to Arm64 with
+`cmake/arm64-windows-llvm.cmake`, and an acceptance run that needs no real
+weights because `nllb-test-cache` compares two C++ paths.
+
+**Android / Adreno: see `ANDROID.md`** — where to get an Adreno at all (you
+probably already own one; Qualcomm Device Cloud is the free fallback), which
+Adreno generations actually work, and a two-minute on-device check with
+`ocl-probe` before you build anything.
+
+**Windows: see `WINDOWS.md`**, which is written end to end for an x86-64
+laptop with both an Intel iGPU and an NVIDIA dGPU, and starts with the device
+question rather than with cmake.
+
+Per-target recipes:
+
+```bash
+# Linux desktop GPU — headers and the ICD loader come from the distro
+sudo apt install opencl-headers ocl-icd-opencl-dev clinfo
+clinfo | grep -E "Platform Name|Device Name"     # before building, not after
+cmake -B build -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+
+# Android / Adreno — the llama.cpp OPENCL.md recipe, with NLLB_ADRENO on
+cmake -B build-android -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON \
+    -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+    -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-android -j
+
+# Windows 11 Arm64 (Snapdragon X Elite) — OpenCL SDK from vcpkg
+cmake -B build -G Ninja -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON \
+    -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake \
+    -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+The Android and Windows Arm64 lines are **transcribed, not run** — nothing in
+step 14 had a Snapdragon to point at. Treat them as a starting point and check
+them against llama.cpp's `docs/backend/OPENCL.md`, which is where they come from.
+
+`BACKEND.md` carries the acceptance run to make on a real device, and what to
+look for; the short version is `splits 1` on the cached step, `full = exact` in
+`nllb-test-cache`, and a corruption matrix that does not move with precision.
+
 ## Run
 
 The golden format changed in this step (raw per-layer `.bin` files plus a
