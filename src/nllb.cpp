@@ -301,16 +301,27 @@ bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
     // Pass 2: the first GPU, either any of them ("auto"/"gpu") or one whose
     // registry or device name matches the family asked for.
     const bool any_gpu = want == "auto" || want == "gpu";
-    // Family -> the spellings ggml actually uses. "metal" is the one that bit;
-    // the others are here so that naming a backend ggml grows later works
-    // without another round trip.
-    static const struct { const char * family; const char * spellings[3]; } aliases[] = {
-        { "metal",  { "mtl",    "metal",  nullptr } },
-        { "vulkan", { "vk",     "vulkan", nullptr } },
-        { "cuda",   { "cuda",   nullptr,  nullptr } },
-        { "rocm",   { "rocm",   "hip",    nullptr } },
-        { "sycl",   { "sycl",   nullptr,  nullptr } },
-        { "opencl", { "opencl", "ocl",    nullptr } },
+    // A family is a SET OF SPELLINGS THAT MEAN EACH OTHER, not a canonical name
+    // with aliases hanging off it. The first version of this table was the
+    // second kind - it matched a device only when `want` was the family's own
+    // name - and step 14 measured what that costs: `--backend opencl` resolved
+    // and `--backend ocl` did not, on the same machine, against a device ggml
+    // calls "GPUOpenCL" in a registry it calls "OpenCL". The handoff had been
+    // claiming both spellings worked since step 13, because the table LOOKS
+    // like it lists them. Every row is now entered from any member, so naming a
+    // family by any of its spellings finds a device named by any other.
+    //
+    // Note "opencl" resolves by the plain substring test as well, since
+    // "gpuopencl" contains it. That is luck, not design: "ocl" does not appear
+    // in "gpuopencl" or in "opencl" as a substring, which is exactly the case
+    // the plain test cannot cover and the table exists for.
+    static const char * const families[][3] = {
+        { "metal",  "mtl",    nullptr },
+        { "vulkan", "vk",     nullptr },
+        { "cuda",   nullptr,  nullptr },
+        { "rocm",   "hip",    nullptr },
+        { "sycl",   nullptr,  nullptr },
+        { "opencl", "ocl",    nullptr },
     };
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -322,9 +333,18 @@ bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
         const std::string reg  = nllb_lower(ggml_backend_reg_name(ggml_backend_dev_backend_reg(d)));
         bool match = name.find(want) != std::string::npos ||
                      reg.find(want)  != std::string::npos;
-        for (const auto & a : aliases) {
-            if (match || want != a.family) continue;
-            for (const char * sp : a.spellings) {
+        for (const auto & fam : families) {
+            if (match) break;
+            // Is `want` one of this family's spellings? If not, the row says
+            // nothing about it.
+            bool in_family = false;
+            for (const char * sp : fam) {
+                if (!sp) break;
+                if (want == sp) { in_family = true; break; }
+            }
+            if (!in_family) continue;
+            // It is - so try every OTHER spelling of the same family.
+            for (const char * sp : fam) {
                 if (!sp) break;
                 if (name.find(sp) != std::string::npos || reg.find(sp) != std::string::npos) {
                     match = true;

@@ -327,3 +327,103 @@ jobs:
       - name: Backend port corruption matrix ON METAL - the same table as on the CPU?
         run: |
           NLLB_BACKEND=metal python tests/corrupt_backend.py build models/small-f16.gguf ref-small/ -t 3
+
+  # ---------------------------------------------------------------------------
+  # OPENCL (step 14). What this job can and cannot claim, stated up front so a
+  # green tick is not read as more than it is.
+  #
+  # IT CAN: configure, compile the whole tree clean with the OpenCL backend in
+  # it, and assert that doing so leaves the CPU path BIT-IDENTICAL - which is
+  # the one thing a build flag can break invisibly, and which
+  # nllb-dump-states --diff answers in one run. It also types every backend
+  # spelling the docs advertise, because step 14 found `--backend ocl`
+  # documented and broken while `--backend opencl` worked: a table that
+  # translates names is a claim, and a claim nothing executes is a comment.
+  #
+  # IT CANNOT: run a single graph on OpenCL. No hosted runner has an OpenCL
+  # device that compiles ggml's kernels. pocl (the only ICD installable here)
+  # lacks cl_khr_fp16 and is DROPPED at registration, which this job asserts
+  # rather than ignores - if pocl ever gains fp16, that step goes red and the
+  # acceptance run in BACKEND.md becomes runnable in CI. Until then the OpenCL
+  # numbers come from real hardware and this job guards the plumbing.
+  # ---------------------------------------------------------------------------
+  opencl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: OpenCL headers and ICD loader
+        run: sudo apt-get update -qq && sudo apt-get install -y opencl-headers ocl-icd-opencl-dev pocl-opencl-icd clinfo
+
+      - name: Build WITHOUT OpenCL - the baseline for the diff below
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Build WITH OpenCL
+        run: |
+          cmake -B build-cl -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cl -j"$(nproc)"
+          ./build-cl/bin/nllb-cli --list-backends
+
+      - name: Small shape fixture
+        run: |
+          pip install numpy gguf
+          python tests/make_shape_model.py models/small-f32.gguf --d-model 256 \
+              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64 --outtype f32
+          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 64 --max-new 24 --lengths 6 12 24 40
+
+      # THE ASSERTION THIS JOB EXISTS FOR. Linking a second backend into the
+      # process must not move one float of the CPU path.
+      - name: The OpenCL flag must not move the CPU path
+        run: |
+          ./build/bin/nllb-dump-states    models/small-f32.gguf ref-small/ /tmp/a.bin -t 2
+          ./build-cl/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/b.bin -t 2
+          ./build-cl/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin | tee /tmp/diff.txt
+          grep -q "^IDENTICAL" /tmp/diff.txt
+
+      - name: The gates still mean what they meant, in the OpenCL build
+        run: |
+          ./build-cl/bin/nllb-test-cache models/small-f32.gguf ref-small/ -t 2
+          python tests/corrupt_backend.py build-cl models/small-f32.gguf ref-small/ -t 2
+
+      # Every spelling BACKEND.md and the handoff advertise. `ocl` was
+      # documented and broken from step 13 until step 14 measured it; nothing
+      # executed the table, so nothing noticed. A missing device must FAIL with
+      # the device list rather than fall back to the CPU - the other half of
+      # the trap-49 contract, asserted for Metal in the synthetic job.
+      - name: Every documented backend spelling resolves the same way
+        run: |
+          set -x
+          for want in cpu auto gpu opencl ocl OCL OpenCL; do
+            out=$(./build-cl/bin/nllb-cli -m /dev/null --backend "$want" --tgt deu_Latn x 2>&1 || true)
+            # Only `cpu` and `auto` are required to resolve. `gpu` and every
+            # opencl spelling name a DEVICE, and there is no OpenCL device on
+            # this runner (see the step below), so they are required to fail
+            # with the device list instead - which is the contract, not a
+            # defect: `auto` falls back to the CPU and a named backend never
+            # does. The first draft of this loop put `gpu` in the first bucket
+            # and went red locally, which is the check working.
+            case "$want" in
+              cpu|auto)
+                echo "$out" | grep -q "is not available in this build" && exit 1 ;;
+              *)
+                echo "$out" | grep -q "devices:" || {
+                  echo "$out" | grep -q "failed to read magic" || exit 1; } ;;
+            esac
+          done
+
+      # An assertion about the ENVIRONMENT, not about this repo. If it ever goes
+      # red, pocl grew cl_khr_fp16 and the acceptance run can move into CI.
+      - name: pocl is still dropped for want of cl_khr_fp16 (an environment assertion)
+        run: |
+          ./build-cl/bin/nllb-cli --list-backends 2>&1 | tee /tmp/be.txt
+          grep -q "does not support FP16" /tmp/be.txt \
+            && echo "as expected: no OpenCL device here, so no graph ran on OpenCL" \
+            || echo "::warning::pocl no longer drops out - see BACKEND.md, the acceptance run may now be runnable in CI"

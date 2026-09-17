@@ -293,15 +293,196 @@ NLLB_BACKEND=metal ./build/bin/nllb-bench models/nllb-600M-f16.gguf -t 8 --src 2
 Compare the CPU step with step 10's 18.52 ms before reading the Metal one, and
 read `peak memory footprint`, not RSS (trap 36).
 
+## Step 14: OpenCL — the build flag, and what it did NOT prove
+
+**The prediction at the top of the next section was right about the shape of
+the work and wrong about one word.** It said a second backend is "a build flag
+and this file's acceptance run with the backend name changed". The build flag is
+real and `src/nllb.{h,cpp}` needed **no** change for the backend itself. But
+`nllb_pick_device` did need one, and this file was the thing asserting it did
+not — see "the alias table was one-directional" below.
+
+### What is proven
+
+Sandbox, x86, 2 cores, ggml 0.23.0 (`7840aaba`, the step-13 pin — deliberately
+NOT bumped, so that any OpenCL difference is OpenCL's and not the bump's).
+
+| claim | result |
+|---|---|
+| `-DNLLB_OPENCL=ON` configures, compiles clean under `-Wall -Wextra` | **yes**, all 12 targets |
+| the OpenCL backend registers a device | **yes**, `GPUOpenCL - … (gpu)` |
+| `--backend opencl` / `ocl` / `OCL` / `GPUOpenCL` / `gpu` / `auto` all resolve | **yes**, after the fix below |
+| a named-but-absent backend still FAILS with the device list | **yes** (`metal`, `vk`) |
+| **the flag does not move the CPU path** | **bit-identical, 912 records, 0 differ** |
+| `nllb-test-cache` on the CPU in the OpenCL build | `full = exact`, `[arena]` exact, PASS |
+| `tests/corrupt_backend.py` on the CPU in the OpenCL build | matrix unchanged |
+
+The bit-identity row is the load-bearing one and it is the reason
+`nllb-dump-states` exists. A build flag that pulls a second backend library into
+the process is exactly the kind of change that "obviously" cannot affect the CPU
+path, and the instrument for "obviously" in this repo is a diff:
+
+```
+$ ./build/bin/nllb-dump-states    models/shape-small-f32.gguf ref-shape/ /tmp/a.bin -t 2
+$ ./build-cl/bin/nllb-dump-states models/shape-small-f32.gguf ref-shape/ /tmp/b.bin -t 2
+$ ./build-cl/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin
+IDENTICAL - 912 records, 9158944 bytes, 0 differ
+```
+
+### What is NOT proven, and it is the whole acceptance run
+
+**No graph has ever executed on OpenCL.** Not one. Every row above is about
+registration, naming and the CPU path. The reason is not a defect in this
+project and is worth recording, because the next person in a sandbox will hit
+it in the same order:
+
+* **pocl 5.0** (Ubuntu noble, `pocl-opencl-icd`) has `cl_khr_subgroups` and
+  **not** `cl_khr_fp16`, so ggml drops it at registration:
+  `ggml_opencl: device does not support FP16` → `drop unsupported device`. The
+  registry then contains no OpenCL device and `--backend opencl` fails with the
+  device list — a message about naming, for a cause that is about extensions.
+* **Intel's CPU OpenCL runtime** (`pip install intel-opencl-rt intel-cmplr-lib-rt`,
+  ICD at `/etc/OpenCL/vendors/`) has `cl_khr_fp16` **and** `cl_intel_subgroups`,
+  registers cleanly, reports `device FP16 support: true`, and then **fails to
+  compile ggml's kernels**:
+
+  ```
+  ggml_opencl: loading OpenCL kernels...........kernel compile error (err=-11)
+  CompilerException Failed to lookup symbol kernel_geglu
+  JIT session error: Symbols not found: [ _Z6exp_rmDh ]
+  ```
+
+**That was isolated to four lines, and the isolation is the useful part.** A
+kernel containing nothing but `exp(half)` builds and yields a kernel object with
+no build options, and fails with `err=-11` and the same missing symbol under the
+options ggml passes:
+
+```
+-cl-std=CL3.0 -cl-mad-enable -cl-unsafe-math-optimizations
+-cl-finite-math-only -cl-fast-relaxed-math
+```
+
+So it is a gap in that runtime's JIT under relaxed math, reproducible against
+the raw ICD with no ggml in the picture. Three things follow, and the second is
+the one that generalises past OpenCL:
+
+1. **ggml compiles its ENTIRE kernel set at backend init**, not lazily per op.
+   NLLB uses no GLU; a missing `exp(half)` in `glu.cl` still takes the whole
+   backend down before a single graph is built. `supports_op` never gets a
+   chance to be wrong, because init fails first.
+2. **`-cl-fast-relaxed-math` is not neutral.** This is trap 48's lesson one
+   layer down: a backend's arithmetic is a property of the kernel it picks, and
+   a backend's *availability* is a property of the flags it compiles with. Both
+   are invisible from the tensor types.
+3. **A device that registers is not a device that runs.** ggml's extension check
+   at registration (`cl_khr_fp16` + subgroups) is necessary and not sufficient,
+   so `--list-backends` showing `GPUOpenCL` proves less than it looks like it
+   proves. Read the `ggml_opencl:` lines on stderr.
+
+An OpenCL device that can actually run the kernels is therefore the one thing
+step 14 could not obtain, and every number in "the acceptance run" below is
+still blank. **Do not read the table above as "OpenCL works".**
+
+### The alias table was one-directional, and this file was asserting otherwise
+
+Measured on the registered device: `--backend opencl` resolved and
+**`--backend ocl` did not**, on the same machine, in the same process.
+
+```
+opencl   -> resolves          ocl  -> backend 'ocl' is not available in this
+                                      build (devices: GPUOpenCL (OpenCL), CPU (CPU))
+```
+
+The table mapped a family NAME to the spellings ggml uses, and matched a device
+only when the user typed the family's own name. Every other member was reachable
+as a *target* and not as an *input*. So the documented `ocl`, `vk` and `hip`
+never worked as things to type; `mtl` worked only because ggml's Metal device is
+literally called `MTL0` and the plain substring test caught it. This file and
+the handoff had both been claiming `opencl`/`ocl` since step 13, because the
+table looks like it lists them.
+
+Fixed by making every row enterable from any member. Note what the case shows
+about the plain substring test that runs first: `"gpuopencl"` contains
+`"opencl"`, so that spelling resolves without the table at all — **luck, not
+design.** `"ocl"` is not a substring of `"gpuopencl"` or of `"opencl"`, which is
+precisely the case the table exists for and precisely the one that was broken.
+
+This is trap 49 arriving a second time, one level up. Trap 49 was "the name the
+user types is not the name the library prints". Step 14's is: **a table that
+translates names is a claim, and a claim nothing executes is a comment.** There
+is now a CI step that types every documented spelling.
+
+### Naming, for the record
+
+| | |
+|---|---|
+| registry name | `OpenCL` |
+| device name | `GPUOpenCL` — not `OCL0`, not `OpenCL0` |
+| device type | `GPU`, **unconditionally** — ggml returns `GGML_BACKEND_DEVICE_TYPE_GPU` without asking the device, so a CPU-backed OpenCL device (pocl, Intel CPU runtime) presents as a GPU to `nllb_pick_device` and to `auto`. ggml prints `warning, the default device is not a GPU` and registers it anyway. |
+
+### Two things OpenCL does differently from Metal, both already handled
+
+* **`buffer_from_host_ptr` is `false`.** Metal's zero-copy weight load — the
+  mapped file becoming an `MTLBuffer` with nothing uploaded — is not available.
+  `nllb_model_load` already handles this generically: it unmaps and reads
+  instead, with `NLLB_LOAD_TRACE=1` printing `cannot wrap host memory -
+  reading`. No change was needed. **The consequence is for the GATE, not the
+  loader:** `nllb-test-mmap` correctly fails there, because the two loads become
+  the same code and the comparison is vacuous (the step-4 SKIP lesson). Its
+  message named only the platform and the alignment as causes; it now names the
+  backend and this third cause first, since it is the one that is not a defect.
+  **`nllb-test-mmap`'s claim lives on the CPU. Run it there.**
+* **`diag_mask_inf` is a kernel OpenCL HAS.** Metal does not implement it, which
+  is why the cached step builds its mask as data (and why trap 46 exists — the
+  mask helper shared between the cache and its reference blinded the gate).
+  Nothing should be undone on that account: the two independent implementations
+  are what the cache gate is made of, and reuniting them to use an op OpenCL
+  happens to have would re-introduce exactly the failure trap 46 records. It
+  does suggest `splits 1` may come for free where Metal had to be worked at —
+  which is a prediction to check, not a result.
+
+### The acceptance run, unmeasured
+
+Every cell below is blank on purpose. Fill them on a device that compiles the
+kernels — an Adreno phone, or a desktop GPU with a vendor ICD.
+
+| check | command | expected | measured |
+|---|---|---|---|
+| device registers | `nllb-cli --list-backends` | a `GPUOpenCL` line | — |
+| nothing falls back | `NLLB_ARENA_TRACE=1 NLLB_BACKEND=opencl nllb-test-cache …` | `splits 1` on the cached step | — |
+| trap 15 survives reordering | `NLLB_BACKEND=opencl nllb-test-cache …` | `full = exact`, 0 floats | — |
+| trap 16 at equal length | same run | `[arena]` bit-identical | — |
+| ids against the CPU | `nllb-test-precision … --backend cpu:opencl` | exact 9/9 | — |
+| the product | `verify_translation.py … --backend opencl` | 9/9 byte-identical | — |
+| the gate still fires | `NLLB_BACKEND=opencl corrupt_backend.py …` | the CPU's matrix, unchanged | — |
+| **the host-pointer pair** | the two `report` rows | **may finally FIRE** | — |
+
+The last row is the one worth going out of your way for. `mask-through-data` and
+`mask-not-input` are `report` rather than `fire` because the CPU's buffers are
+host memory and Apple's are shared, so neither machine can see that class.
+**OpenCL is the first candidate that might not map host memory** — it says so
+itself with `buffer_from_host_ptr = false`. If they fire, promote them to `fire`
+and name the backend the assertion rests on. If they stay inert, find out
+whether that device is mapping host memory anyway before concluding the code is
+clean.
+
+And the expectation, since step 13 set it wrong once already: **a device backend
+is not automatically faster.** On the M1 the GPU wins the encoder 9.8x and loses
+the one-token decode step at 0.93x, because that step is a bandwidth-bound
+matvec. Read `encoder pass` and `with lm_head` separately.
+
 ## For the next backend (OpenCL, Vulkan, CUDA …)
 
 Step 13 is closed: Metal ships. The work for a second device backend is a build
 flag and this file's acceptance run with the backend name changed — nothing in
 `src/nllb.{h,cpp}` is Metal-specific, and `nllb_pick_device` already knows the
 family names `opencl`/`ocl`, `vulkan`/`vk`, `cuda`, `rocm`/`hip`, `sycl`.
+**(Step 14 qualified both halves of that sentence: the library needed nothing,
+`nllb_pick_device` needed a fix, and "a build flag" understates getting an
+OpenCL implementation that compiles the kernels at all. See above.)**
 
 ```bash
-cmake -B build -DGGML_OPENCL=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+cmake -B build -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ./build/bin/nllb-cli --list-backends
 NLLB_BACKEND=opencl ./build/bin/nllb-test-cache models/nllb-600M-f16.gguf ref/ -t 8
 ./build/bin/nllb-test-precision models/nllb-600M-f16.gguf models/nllb-600M-f16.gguf \
