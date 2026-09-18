@@ -120,6 +120,36 @@ cmake -B build -G Ninja -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON \
 cmake --build build -j
 ```
 
+### CUDA (step 16)
+
+```bash
+nvidia-smi --query-gpu=name,compute_cap --format=csv   # T4 -> 7.5 -> 75
+cmake -B build -DNLLB_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES=75
+cmake --build build -j
+./build/bin/nllb-cli --list-backends          # expect a CUDA0 line
+```
+
+Needs the CUDA toolkit (`nvcc --version`) at build time and a driver at run
+time; ggml's `find_package(CUDAToolkit)` is what finds the first, and
+`NLLB_CUDA=ON` with no toolkit is a configure-time FATAL_ERROR rather than a
+link failure later.
+
+**Pin `CMAKE_CUDA_ARCHITECTURES`.** ggml defaults it to `native` when
+CUDAToolkit >= 11.6 and CMake >= 3.24, and to a ladder of virtual
+architectures otherwise — minutes of nvcc for code this machine will not run.
+
+Two consequences of CUDA being the first DISCRETE device here, both of which
+are correct and neither of which is obvious:
+
+* **mmap turns itself off.** `props.caps.buffer_from_host_ptr` is false on
+  CUDA, so the loader drops the mapping and reads the file through its 64 MB
+  staging buffer instead. `nllb-test-mmap` must therefore be run
+  `--backend cpu`: on CUDA it is not a failure, it is a no-op with a
+  misleading name. Same posture as Windows.
+* **`--no-mmap` stops being a variable** for the same reason — both paths end
+  in a device copy.
+
 The Android and Windows Arm64 lines are **transcribed, not run** — nothing in
 step 14 had a Snapdragon to point at. Treat them as a starting point and check
 them against llama.cpp's `docs/backend/OPENCL.md`, which is where they come from.

@@ -13,6 +13,18 @@ tokenizer are each verified against HuggingFace — see `DECODER.md`,
 `GENERATE.md`, `CACHE.md`, `PROFILE.md`, `PRECISION.md`, `TOKENIZER.md`. The
 CLI and the first text → text gate are `CLI.md`.
 
+Backends: `BACKEND.md` (step 13 Metal, step 14 OpenCL, step 16 CUDA) and
+`BUILD.md` for the flags. Metal ships and is verified on an M1; OpenCL and CUDA
+are built and CI-guarded with **no graph run on them yet**, and their
+acceptance tables in `BACKEND.md` are deliberately blank until one is.
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release                                    # CPU, + Metal on macOS
+cmake -B build -DNLLB_CUDA=ON   -DCMAKE_CUDA_ARCHITECTURES=75 ...            # NVIDIA
+cmake -B build -DNLLB_OPENCL=ON [-DNLLB_ADRENO=ON] ...                       # OpenCL
+./build/bin/nllb-cli --list-backends
+```
+
 ---
 
 ## Step 1: NLLB → GGUF
@@ -22,7 +34,8 @@ reproduces HuggingFace's encoder to float tolerance. Nothing here needs a GPU
 and the converter itself needs neither torch nor transformers.
 
 ```
-tools/convert_nllb_to_gguf.py   HF snapshot  -> .gguf         (numpy + safetensors + gguf)
+tools/convert_nllb_to_gguf.py   HF snapshot  -> .gguf, and .gguf -> requantised .gguf
+                                (numpy + safetensors + gguf; no torch for safetensors)
 tools/ref_encoder.py            .gguf        -> hidden states (numpy only; the C++ spec)
 tools/dump_reference.py         HF model     -> ref/*.bin     (golden files for C++ tests)
 tests/make_tiny_model.py        random tiny NLLB, no download

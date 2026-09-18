@@ -85,6 +85,7 @@ void usage(const char * argv0) {
         "  -b, --backend NAME    where the graphs run (default auto):\n"
         "                          auto   the GPU if this build has one, else CPU\n"
         "                          metal  Metal; FAILS rather than fall back\n"
+        "                          cuda   CUDA; FAILS rather than fall back\n"
         "                          cpu    ggml's CPU backend - the reference, and\n"
         "                                 bit-identical to every pre-step-13 build\n"
         "                          or a device name from --list-backends\n"

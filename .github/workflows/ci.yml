@@ -427,3 +427,96 @@ jobs:
           grep -q "does not support FP16" /tmp/be.txt \
             && echo "as expected: no OpenCL device here, so no graph ran on OpenCL" \
             || echo "::warning::pocl no longer drops out - see BACKEND.md, the acceptance run may now be runnable in CI"
+
+  # ---------------------------------------------------------------------------
+  # CUDA (step 16). Same shape as the OpenCL job above and the same honesty
+  # about what a green tick means.
+  #
+  # IT CAN: configure with the CUDA backend, compile the whole tree clean with
+  # nvcc in the build, and assert that doing so leaves the CPU path
+  # BIT-IDENTICAL - the one thing a build flag can break invisibly. It also
+  # types every documented spelling, because step 14 found `ocl` documented and
+  # broken while `opencl` worked and nothing executed the table.
+  #
+  # IT CANNOT: run a single graph. No hosted runner has an NVIDIA GPU. The
+  # numbers come from real hardware (Colab, a workstation) and this job guards
+  # the plumbing. The last step asserts the ABSENCE of a CUDA device, so if a
+  # runner ever grows one it goes red and the acceptance run in BACKEND.md
+  # becomes runnable here.
+  # ---------------------------------------------------------------------------
+  cuda:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: CUDA toolkit (no driver, no device - nvcc is all this job needs)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nvidia-cuda-toolkit
+          nvcc --version
+
+      - name: Build WITHOUT CUDA - the baseline for the diff below
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      # 75-virtual only: nothing will execute it, and a -real target doubles
+      # the nvcc time for device code no runner can run.
+      - name: Build WITH CUDA
+        run: |
+          cmake -B build-cu -DNLLB_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_CUDA_ARCHITECTURES=75-virtual
+          cmake --build build-cu -j"$(nproc)"
+          ./build-cu/bin/nllb-cli --list-backends
+
+      - name: Small shape fixture
+        run: |
+          pip install numpy gguf
+          python tests/make_shape_model.py models/small-f32.gguf --d-model 256 \
+              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64 --outtype f32
+          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 64 --max-new 24 --lengths 6 12 24 40
+
+      # THE ASSERTION THIS JOB EXISTS FOR. Linking a second backend into the
+      # process must not move one float of the CPU path.
+      - name: The CUDA flag must not move the CPU path
+        run: |
+          ./build/bin/nllb-dump-states    models/small-f32.gguf ref-small/ /tmp/a.bin -t 2
+          ./build-cu/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/b.bin -t 2
+          ./build-cu/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin | tee /tmp/diff.txt
+          grep -q "^IDENTICAL" /tmp/diff.txt
+
+      - name: The gates still mean what they meant, in the CUDA build
+        run: |
+          ./build-cu/bin/nllb-test-cache models/small-f32.gguf ref-small/ -t 2
+          python tests/corrupt_backend.py build-cu models/small-f32.gguf ref-small/ -t 2
+
+      # `cuda` has one spelling, unlike metal/MTL and opencl/ocl, so this loop
+      # is cheaper than the OpenCL one - but it is the same contract: a missing
+      # device FAILS with the device list rather than falling back to the CPU.
+      - name: Every documented backend spelling resolves the same way
+        run: |
+          set -x
+          for want in cpu auto gpu cuda CUDA cuda0; do
+            out=$(./build-cu/bin/nllb-cli -m /dev/null --backend "$want" --tgt deu_Latn x 2>&1 || true)
+            case "$want" in
+              cpu|auto)
+                echo "$out" | grep -q "is not available in this build" && exit 1 ;;
+              *)
+                echo "$out" | grep -q "devices:" || {
+                  echo "$out" | grep -q "failed to read magic" || exit 1; } ;;
+            esac
+          done
+
+      # An assertion about the ENVIRONMENT, not about this repo.
+      - name: No CUDA device on this runner (so no graph ran on CUDA)
+        run: |
+          ./build-cu/bin/nllb-cli --list-backends 2>&1 | tee /tmp/be.txt
+          grep -qi "CUDA" /tmp/be.txt \
+            && echo "::warning::a CUDA device appeared - see BACKEND.md, the acceptance run may now be runnable in CI" \
+            || echo "as expected: no CUDA device here, so nothing ran on it"

@@ -533,3 +533,92 @@ tests/bench_cached.cpp     section [1] times the reused scheduler; arena in MiB.
                            matrix at f32 and f16, and a macOS Metal job
                            (continue-on-error: unverified on GitHub's runners)
 ```
+
+## Step 16: CUDA — the build flag, and the blank table
+
+**BUILT AND CI-GUARDED. NO GRAPH HAS RUN ON IT YET** — the acceptance table
+below is deliberately empty, the same way step 14's was, and it is the only
+part of this section that matters. `-DNLLB_CUDA=ON` configures, compiles the
+tree with nvcc in it, registers a device on a machine that has one, and
+**does not move the CPU path**: `nllb-dump-states --diff` between a CUDA build
+and a plain one is the assertion the `cuda` job in `ci.yml` exists for.
+
+`src/nllb.{h,cpp}` is unchanged. That is what step 13 bought, and unlike step
+14 it held without a fix: `nllb_pick_device`'s family row `{ "cuda" }` resolves
+ggml's registry `CUDA` and its devices `CUDA0`, `CUDA1` — by substring on the
+device name, and by pass 1 on an exact `cuda0`. There is only one spelling, so
+trap 50's asymmetry has nothing to catch here.
+
+Read out of ggml rather than assumed (`456172ec`, 14 Sep 2026):
+
+| fact | where | consequence here |
+|---|---|---|
+| registry `CUDA`, devices `CUDA0`… | `include/ggml-cuda.h`, `GGML_CUDA_NAME` | `--backend cuda` and `--backend cuda0` both resolve |
+| `caps.buffer_from_host_ptr = false` | `ggml-cuda.cu`, device props | the loader drops the mapping and reads; `nllb-test-mmap` is CPU-only here |
+| `caps.host_buffer = true`, `async = true` | same struct | pinned staging is available if load time ever matters |
+| `DIAG_MASK_INF` implemented | `ggml-cuda.cu` | **the un-cached decoder should NOT split**, unlike Metal |
+| `GET_ROWS` on Q8_0 | `supports_op` | `q8emb` runs on device — still unmeasured on Metal |
+| every other op this library builds | `ADD MUL MUL_MAT NORM SCALE RELU SOFT_MAX CPY CONT GET_ROWS` | `splits 1` is the expectation for the cached step |
+
+### The acceptance run (unfilled)
+
+| gate | f32 | f16 |
+|---|---|---|
+| `nllb-cli` translates, right language | | |
+| `nllb-test-cache`, `full = exact`, `[arena]`, splits | | |
+| `nllb-test-precision --backend cpu:cuda`, ids + headroom | | |
+| `verify_translation.py --backend cuda`, 9 cases + chrF | | |
+| `corrupt_backend.py`, the same table as the CPU? | | |
+| encoder / un-cached prefix / cached step, ms | | |
+
+```bash
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf --tgt deu_Latn "Hello, world!"
+NLLB_BACKEND=cuda ./build/bin/nllb-test-cache models/nllb-600M-f16.gguf ref/ -t 8
+./build/bin/nllb-test-precision models/nllb-600M-f16.gguf models/nllb-600M-f16.gguf \
+    ref/ -t 8 --backend cpu:cuda
+python tests/verify_translation.py ./build/bin/nllb-cli models/nllb-600M-f16.gguf ref/ \
+    -t 8 --backend cuda
+NLLB_BACKEND=cuda python tests/corrupt_backend.py build models/nllb-600M-f16.gguf ref/ -t 8
+NLLB_ARENA_TRACE=1 ./build/bin/nllb-bench models/nllb-600M-f16.gguf --steps 32
+./build/bin/nllb-test-mmap models/nllb-600M-f16.gguf --backend cpu   # CPU, on purpose
+```
+
+### Three things this device can test that no machine here could
+
+1. **The two host-pointer mutations should finally fire.**
+   `mask-through-data` and `mask-not-input` are `report` rows in
+   `tests/corrupt_backend.py` because the CPU and the M1's unified memory both
+   hide that class by accident. A non-host-visible buffer is the first machine
+   that can catch it. **The interesting outcome is the table CHANGING** — if it
+   does not, that is a fact about how the scheduler places graph inputs, and it
+   should be written down as one rather than read as a pass.
+2. **The uncleared KV cache meets a recycling allocator.**
+   `nllb_kv_cache_init` deliberately does not clear its buffer, on the argument
+   that nothing reads a slot before it is written (the mask hides every slot
+   >= n_kv and the views never reach past it). ggml-cuda pools device buffers,
+   so an unwritten slot holds a previous graph's floats instead of a fresh zero
+   page — a stronger adversary for that argument than either machine so far.
+   `full` and `[arena]` in the cache gate are what would say so.
+3. **`splits 1` on the un-cached decoder.** Metal's 12+ splits are
+   `ggml_diag_mask_inf` falling back once per layer; CUDA implements it, so the
+   fallback that step 13 kept on purpose in the reference path stops being
+   exercised here. Do not read the "12 splits" line above as a GPU fact — it is
+   a Metal fact.
+
+### Two predictions, written before measuring
+
+* **The scheduler's per-step cost comes back, and bigger in share.** 1.59 ms of
+  an 18.4 ms step on the M1 was `ggml_backend_sched_alloc_graph` re-splitting
+  and re-placing an unchanged 716-node graph once per token, with
+  `graph_optimize` inside it. It is a property of the scheduler, not of Metal.
+  Expect a faster `compute` on any recent NVIDIA card and therefore a *larger*
+  fraction lost to `alloc`. Graph reuse is Next steps 5, and CUDA gives it a
+  second argument: ggml has `GGML_CUDA_GRAPHS`, it is labelled "llama.cpp only"
+  and defaults OFF, and the reason is that capturing a CUDA graph needs the
+  ggml graph to be unchanged between steps. Reuse first; that flag is inert
+  until then.
+* **f16 headroom is the number to watch.** `cpu:metal` at f16 came back at
+  0.39x with 1/176 unsafe decisions. CUDA picks between cuBLAS and mmq
+  (`GGML_CUDA_FORCE_MMQ` forces the latter), so trap 48 applies again with a
+  different selection rule: run f32 first as the control, and treat moving ids
+  as information — `--allow-id-drift` plus chrF is the product-level answer.

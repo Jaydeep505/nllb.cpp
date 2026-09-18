@@ -15,6 +15,11 @@
 # anyway: a Debug build of this is ~20x slower and the first thing you would
 # notice is a bench number that means nothing.
 #
+# Device backends are OFF by default and each is one flag:
+#   -DNLLB_OPENCL=ON   step 14   (+ -DNLLB_ADRENO=ON on Snapdragon)
+#   -DNLLB_CUDA=ON     step 16   (+ -DCMAKE_CUDA_ARCHITECTURES=<sm> — pin it)
+# Metal needs no flag: it is found on macOS and, since step 13, used.
+#
 # On macOS the configure step finds Accelerate, BLAS and Metal and links them.
 # Since step 13 Metal IS used: every graph goes through ggml_backend_sched, and
 # nllb-cli defaults to --backend auto (Metal when present). The LIBRARY default
@@ -46,7 +51,11 @@
 # Everything above is documented in claude/handoff.md; the trap numbers refer
 # to its "traps" section.
 # ---------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.14)
+# 3.18 and not 3.14 since step 16: vendor/ggml/src/ggml-cuda/CMakeLists.txt
+# declares that minimum itself for CMAKE_CUDA_ARCHITECTURES, and a top-level
+# minimum lower than what a component needs leaves CMP0104 unset in this
+# directory. No platform in the matrix ships CMake older than 3.22.
+cmake_minimum_required(VERSION 3.18)
 project(nllb.cpp CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -100,6 +109,42 @@ if(NLLB_OPENCL)
     message(STATUS "nllb: OpenCL backend ON (adreno kernels: ${NLLB_ADRENO})")
 endif()
 
+# ---------------------------------------------------------------------------
+# CUDA (step 16).  -DNLLB_CUDA=ON
+# ---------------------------------------------------------------------------
+# ggml's own switch is GGML_CUDA and it works unchanged, for the same reason
+# GGML_OPENCL does: ggml is add_subdirectory'd below and reads its options out
+# of the same cache. This flag exists on top of it to say at CONFIGURE time
+# what this build will be able to schedule (see the TARGET check below) —
+# unlike OpenCL there are no Adreno-shaped defaults to undo, so that is all it
+# does.
+#
+#   cmake -B build -DNLLB_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+#   cmake -B build -DNLLB_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 ...   # T4
+#
+# PIN CMAKE_CUDA_ARCHITECTURES. ggml sets it to "native" when CUDAToolkit >=
+# 11.6 and CMake >= 3.24 — which a Colab runtime satisfies — and otherwise
+# builds a ladder of virtual architectures that costs many minutes of nvcc for
+# code no machine here will run. 75 T4, 80 A100, 86 RTX 3000, 89 L4/RTX 4000,
+# 90 H100. `nvidia-smi --query-gpu=name,compute_cap --format=csv` is the
+# lookup.
+#
+# What the device must have is checked by ggml at RUNTIME and not by this file:
+# a machine with the toolkit and no usable driver configures, compiles,
+# registers no device, and then `--backend cuda` fails with the device list
+# (trap 49's message). That is the contract, not a defect — `auto` falls back
+# to the CPU and a named backend never does.
+option(NLLB_CUDA "nllb: build the ggml CUDA backend" OFF)
+
+if(NLLB_CUDA)
+    set(GGML_CUDA ON CACHE BOOL "" FORCE)
+    if(DEFINED CMAKE_CUDA_ARCHITECTURES)
+        message(STATUS "nllb: CUDA backend ON (arch ${CMAKE_CUDA_ARCHITECTURES})")
+    else()
+        message(STATUS "nllb: CUDA backend ON, arch NOT pinned - ggml will pick 'native' or a virtual ladder. Pass -DCMAKE_CUDA_ARCHITECTURES=<sm> (75 T4, 80 A100, 86, 89, 90).")
+    endif()
+endif()
+
 add_subdirectory(vendor/ggml)
 
 # ggml registers its backends at runtime and a missing one is a runtime
@@ -113,6 +158,14 @@ if(NLLB_OPENCL AND NOT TARGET ggml-opencl)
         "find_package(OpenCL REQUIRED) needs headers and an ICD loader: "
         "apt install opencl-headers ocl-icd-opencl-dev (Linux), or point "
         "-DOpenCL_INCLUDE_DIR / -DOpenCL_LIBRARY at them. See BUILD.md.")
+endif()
+
+if(NLLB_CUDA AND NOT TARGET ggml-cuda)
+    message(FATAL_ERROR
+        "NLLB_CUDA=ON but ggml did not build its CUDA backend. Its "
+        "find_package(CUDAToolkit) found no toolkit: install one and put nvcc "
+        "on PATH, or point -DCUDAToolkit_ROOT at it. `nvcc --version` is the "
+        "check. See BUILD.md.")
 endif()
 
 # Warnings on OUR targets only - vendor/ggml is added above and keeps its own
