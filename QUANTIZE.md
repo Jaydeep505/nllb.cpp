@@ -393,7 +393,13 @@ precision nothing in this project had ever produced, and the control being
 *larger* than the incremental number is trap 20's rule doing its job for the
 third precision in a row.
 
-### A bug found in `tools/requantize_gguf.py` on the way
+### A bug found in `tools/convert_nllb_to_gguf.py` on the way
+
+(Since step 16 there is no `tools/requantize_gguf.py`: it was merged into
+`tools/convert_nllb_to_gguf.py`, which now takes either an HF snapshot DIR or a
+`.gguf` FILE as its first argument and shares one quantisation plan between the
+two. Every command line in this document still works with the new name. The
+bug below is described where the code now lives.)
 
 **Every file it has ever written is missing `general.file_type`.** The key is on
 its `WRITER_OWNED` list — excluded from the copy loop because the writer is
@@ -557,7 +563,7 @@ whether this decision could have gone the other way. Read `[topk]` and
 not have flipped.
 
 **39. A key excluded from a copy because "the writer owns it" is a key you must
-check the writer wrote.** `tools/requantize_gguf.py` put `general.file_type` on
+check the writer wrote.** `tools/convert_nllb_to_gguf.py` put `general.file_type` on
 its `WRITER_OWNED` list and never called `add_file_type`, so every file it wrote
 for the whole of step 10 lacked the key — and its own trap-32 assertion could
 not see it, because the assertion compares `set(reader.fields) - SKIP_KEYS` and

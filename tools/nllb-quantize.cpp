@@ -5,7 +5,7 @@
 //   ./build/bin/nllb-quantize in.gguf out.gguf q5_k_m --dry-run
 //   ./build/bin/nllb-quantize --list-mixes
 //
-// WHY THIS EXISTS AND tools/requantize_gguf.py DOES NOT REPLACE IT.
+// WHY THIS EXISTS AND tools/convert_nllb_to_gguf.py DOES NOT REPLACE IT.
 // gguf-py's `quants.quantize` raises NotImplementedError for Q2_K..Q6_K and the
 // whole IQ family while DEQUANTISING all of them perfectly - trap 33, and that
 // asymmetry is exactly how you fail to notice. Q5_K is step 10's stated target,
@@ -114,7 +114,7 @@ const mix_t MIXES[] = {
       { { nullptr, GGML_TYPE_F32 } } },
 
     { "q8_0",  GGML_TYPE_Q8_0, "every 2-D weight Q8_0. Matches "
-                              "requantize_gguf.py --quantize '*' --min-rank 2.",
+                              "convert_nllb_to_gguf.py --quantize '*' --min-rank 2.",
       { { nullptr, GGML_TYPE_F32 } } },
 
     { "q8emb", GGML_TYPE_F16,  "token_embd Q8_0, everything else f16. The "
@@ -167,7 +167,7 @@ bool contains(const std::string & hay, const std::string & needle) {
 // llama.cpp's LLAMA_FTYPE numbering, for general.file_type. It is a LABEL: a
 // mix is not a format and the per-tensor types in the file are the truth. It is
 // written anyway because it is convention and because leaving it out is what
-// tools/requantize_gguf.py did by accident for the whole of step 10 - the key
+// tools/convert_nllb_to_gguf.py did by accident for the whole of step 10 - the key
 // was on its "the writer owns this" list and the writer was never told to
 // produce it, so every requantised file silently had no file_type and the
 // trap-32 assertion could not see the hole because the key was excluded from
@@ -587,7 +587,7 @@ int main(int argc, char ** argv) {
                 ++n_same;
             }
             // Keys the output has and the input did not. general.file_type is
-            // the one this is really watching: it is the key requantize_gguf.py
+            // the one this is really watching: it is the key convert_nllb_to_gguf.py
             // silently dropped, and the symmetric mistake is inventing one.
             for (int64_t j = 0; j < gguf_get_n_kv(gg_v); ++j) {
                 const char * key = gguf_get_key(gg_v, j);

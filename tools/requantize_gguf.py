@@ -20,10 +20,10 @@ The C++ nllb-quantize replaces this. Two things here transfer to it verbatim:
 Usage
 -----
   # the step 7.0 file: token_embd at Q8_0, everything else left alone
-  python requantize_gguf.py nllb-600M-f32.gguf nllb-600M-q8emb.gguf --quantize token_embd.weight --type q8_0
+  python requantize_gguf.py in.gguf out.gguf --quantize token_embd.weight --type q8_0
 
   # every 2-D weight, norms and biases left as they are
-  python requantize_gguf.py nllb-600M-f32.gguf nllb-600M-q8all.gguf --quantize '*.weight' --type q8_0 --min-rank 2
+  python requantize_gguf.py in.gguf out.gguf --quantize '*.weight' --type q8_0 --min-rank 2
 
   # what would happen, without writing 1 GB
   python requantize_gguf.py in.gguf out.gguf --quantize '*' --type q8_0 --dry-run

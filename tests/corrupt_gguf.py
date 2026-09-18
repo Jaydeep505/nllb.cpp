@@ -19,7 +19,7 @@ attributed to the correct block.
 
 Writes in place, so work on a copy.
 
---mode quantize, AND WHY IT IS NOT THE SAME AS requantize_gguf.py
+--mode quantize, AND WHY IT IS NOT THE SAME AS convert_nllb_to_gguf.py
 -----------------------------------------------------------------
 Step 10 replaces exact id equality with two new assertions - top-k agreement in
 nllb-test-precision and chrF in verify_translation.py - and trap 27 says a gate
@@ -27,7 +27,7 @@ whose sensitivity nobody has measured is not a gate. The other harnesses in this
 repo can break something on purpose and watch the red appear;  this is that tool
 for the quantisation-shaped failure.
 
-tools/requantize_gguf.py cannot do this job, for two reasons:
+tools/convert_nllb_to_gguf.py cannot do this job, for two reasons:
 
   * it changes the FILE's types, so the two files being compared differ in
     dtype as well as in content, and nllb-test-precision's own "both files

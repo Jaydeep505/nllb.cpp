@@ -1,16 +1,59 @@
 #!/usr/bin/env python3
 """
-Convert facebook/nllb-200-distilled-600M (HF M2M100 architecture) to GGUF.
+Convert facebook/nllb-200-distilled-600M (HF M2M100 architecture) to GGUF, and
+requantise a GGUF this tool wrote.
 
-Reads either model.safetensors or pytorch_model.bin (sharded or not). The
-safetensors path parses the container itself - no safetensors package, no
-torch, and f32/f16/**bf16** all work, which matters because bf16 is what most
-fine-tuning runs save and is the one dtype `safe_open(framework="np")` cannot
-return. The .bin path imports torch lazily, only if a .bin is what you have.
+ONE TOOL, TWO INPUTS. This file is the merge of the old
+convert_nllb_to_gguf.py and the old requantize_gguf.py, which shared a
+quantisation plan, a file_type rule and a metadata-integrity assertion and
+kept three copies of each between them. Which mode runs is decided by the
+first argument, not by a flag:
 
+    <dir>/           an HF snapshot  -> CONVERT   (metadata is GENERATED)
+    <file>.gguf      a GGUF          -> REQUANTISE (metadata is COPIED, and
+                                                    the copy is asserted)
+
+Everything else - the type table, the per-tensor plan, `--quantize/--keep/
+--min-rank`, the report, `--dry-run`, general.file_type, the round-trip
+verification - is the same code down both paths. The two modes differ in
+exactly one thing, and it is the thing worth not sharing: a converted file's
+metadata is built from config.json and the tokenizer files, and a requantised
+file's metadata is copied key by key off the input and then checked (trap 32).
+
+CONVERT
     pip install numpy gguf sentencepiece regex
     python tools/convert_nllb_to_gguf.py models/nllb-600M \
         --outfile models/nllb-600M-f32.gguf --outtype f32
+
+REQUANTISE  (the old requantize_gguf.py command line, unchanged)
+    python tools/convert_nllb_to_gguf.py models/nllb-600M-f16.gguf \
+        models/nllb-600M-q8emb.gguf --quantize token_embd.weight --type q8_0
+
+A TYPE AND A MIX ARE DIFFERENT THINGS, and the merged flags keep them apart the
+way tools/nllb-quantize.cpp does:
+
+  --outtype T     the BASE type: what an unmatched tensor is written as.
+                  f32 (convert default) / f16 / bf16, or `keep` - leave every
+                  unmatched tensor exactly as the input has it, which is the
+                  requantise default and why the old command line still means
+                  what it meant.
+  --quantize GLOB --type T
+                  the EXCEPTION: matched tensors get T instead. Repeatable.
+                  Overridden by --keep GLOB, and skipped for anything under
+                  --min-rank dims or whose row length is not a multiple of the
+                  block size.
+
+So the two step-10 mixes are one command each, from either input:
+
+    --outtype f16 --quantize token_embd.weight --type q8_0        # q8emb
+    --outtype f16 --quantize '*' --min-rank 2 --type q8_0         # q8all
+
+Norms, biases and position_embd.weight stay F32 under every base type and are
+never quantised, in both modes (should_keep_f32). K-quants are NOT here:
+gguf-py dequantises them and cannot write them, which is trap 33 and is what
+tools/nllb-quantize.cpp exists for. This tool covers f32/f16/bf16 and the
+linear quants, and it is the only one of the two that can go straight from a
+checkpoint to a quantised file without writing the 2.46 GB f32 intermediate.
 
 Fine-tunes: everything here comes from config.json, so any M2M100-shaped
 checkpoint converts at whatever depth and width it has. A fine-tune that also
@@ -46,10 +89,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fnmatch
 import json
 import math
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -57,7 +102,9 @@ import numpy as np
 
 try:
     import gguf
-    from gguf import GGUFWriter
+    from gguf import (GGMLQuantizationType, GGUFReader, GGUFValueType,
+                      GGUFWriter, LlamaFileType, quants)
+    from gguf.constants import GGML_QUANT_SIZES, GGML_QUANT_VERSION, Keys
 except ImportError:
     sys.exit("pip install gguf")
 
@@ -626,24 +673,411 @@ def should_keep_f32(name: str) -> bool:
             or name.startswith("position_embd"))
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("model_dir", type=Path,
-                    help="HF snapshot dir (config.json + weights + tokenizer files)")
-    ap.add_argument("--outfile", type=Path, default=None)
-    ap.add_argument("--outtype", choices=["f32", "f16"], default="f32")
-    ap.add_argument("--encoder-only", action="store_true",
-                    help="skip decoder tensors - smaller file for milestone 1")
-    ap.add_argument("--no-tokenizer", action="store_true")
-    ap.add_argument("--embed-merges", action="store_true",
-                    help="write the merge list into the GGUF even when the C++ "
-                         "could derive it from the vocab order (~6 MB, saves "
-                         "~0.4 s of load time). A vocabulary the derivation "
-                         "does not fit embeds the list regardless.")
-    ap.add_argument("--name", default=None)
-    args = ap.parse_args()
+# --------------------------------------------------------------------------
+# the quantisation plan - THE SHARED HALF, used by both modes
+# --------------------------------------------------------------------------
 
+# What gguf-py can WRITE. Q2_K..Q6_K and the IQ family raise
+# NotImplementedError on the quantise path while dequantising fine, which is
+# exactly how you fail to notice: a script that only ever dequantises looks
+# like it supports them. Trap 33. The K-quants are tools/nllb-quantize.cpp's
+# job and cannot be produced from Python at all.
+QUANT_TYPES = {
+    "q8_0": GGMLQuantizationType.Q8_0,
+    "q5_1": GGMLQuantizationType.Q5_1,
+    "q5_0": GGMLQuantizationType.Q5_0,
+    "q4_1": GGMLQuantizationType.Q4_1,
+    "q4_0": GGMLQuantizationType.Q4_0,
+}
+
+# The BASE types: what an unmatched tensor is written as. "keep" is a base type
+# too, and it is the one that makes the requantise mode non-destructive.
+BASE_TYPES = {
+    "f32":  GGMLQuantizationType.F32,
+    "f16":  GGMLQuantizationType.F16,
+    "bf16": GGMLQuantizationType.BF16,
+}
+
+WRITABLE = {**BASE_TYPES, **QUANT_TYPES}
+
+# Keys the GGUFWriter produces itself; copying them duplicates them.
+WRITER_OWNED = {
+    Keys.General.ARCHITECTURE,
+    Keys.General.QUANTIZATION_VERSION,
+    Keys.General.FILE_TYPE,
+    "general.alignment",
+}
+
+# NOT metadata. GGUFReader synthesises these three into .fields from the file
+# HEADER, so a loop that copies every field writes them out as real keys and
+# the next reader chokes on "Duplicate GGUF.version". Caught by the round-trip
+# check in verify_against(), which is the argument for that check existing.
+READER_SYNTHETIC = {"GGUF.version", "GGUF.tensor_count", "GGUF.kv_count"}
+
+SKIP_KEYS = WRITER_OWNED | READER_SYNTHETIC
+
+# The keys nllb_vocab_load REFUSES a file for, in src/nllb-vocab.cpp order.
+# Checked on the way OUT of both modes, because the failure they produce is a
+# 1.2 GB file that loads its weights and then will not translate, and the
+# cheapest place to notice is here. Trap 32.
+REQUIRED_TOKENIZER_KEYS = (
+    "tokenizer.ggml.tokens",
+    "tokenizer.ggml.precompiled_charsmap",
+    f"tokenizer.{ARCH}.added_tokens",
+    f"tokenizer.{ARCH}.added_flags",
+    f"tokenizer.{ARCH}.merges_hash",
+    f"tokenizer.{ARCH}.n_merges",
+)
+
+_FTYPE_FOR = {
+    GGMLQuantizationType.F32:  "ALL_F32",
+    GGMLQuantizationType.F16:  "MOSTLY_F16",
+    GGMLQuantizationType.BF16: "MOSTLY_BF16",
+    GGMLQuantizationType.Q8_0: "MOSTLY_Q8_0",
+    GGMLQuantizationType.Q5_1: "MOSTLY_Q5_1",
+    GGMLQuantizationType.Q5_0: "MOSTLY_Q5_0",
+    GGMLQuantizationType.Q4_1: "MOSTLY_Q4_1",
+    GGMLQuantizationType.Q4_0: "MOSTLY_Q4_0",
+}
+
+
+def type_bytes(nelem: int, t: GGMLQuantizationType) -> int:
+    blck, size = GGML_QUANT_SIZES[t]
+    return nelem // blck * size
+
+
+def file_type_for(rows) -> LlamaFileType:
+    """general.file_type from the types ACTUALLY WRITTEN, by bytes.
+
+    A mix is not a format, so this key is a label and the per-tensor types in
+    the file are the truth - which is why it is worth getting the label right
+    rather than clever. BY BYTES, not by count: requantize_gguf.py counted
+    TENSORS, and this model has 10 f32 norms and biases for every 6 weights, so
+    an f16 file came out labelled ALL_F32 and a q8emb file labelled ALL_F32 as
+    well. Nothing in src/nllb.cpp reads the key, which is why that survived
+    two steps. By bytes it reproduces the old converter's hard-coded
+    ALL_F32/MOSTLY_F16 exactly, and says MOSTLY_Q8_0 for q8all.
+    """
+    by_type = Counter()
+    for r in rows:
+        by_type[r.to] += type_bytes(r.nelem, r.to)
+    if not by_type:
+        return LlamaFileType.ALL_F32
+    dominant, _ = by_type.most_common(1)[0]
+    name = _FTYPE_FOR.get(dominant)
+    return getattr(LlamaFileType, name) if name else LlamaFileType.MOSTLY_Q8_0
+
+
+class PlanRow:
+    """One tensor's decision. `get` yields f32 rows; it is a closure so the
+    plan can be printed, and --dry-run returned from, without reading a byte
+    of weight data."""
+
+    __slots__ = ("name", "shape", "frm", "to", "note", "get")
+
+    def __init__(self, name, shape, frm, to, note, get):
+        self.name, self.shape, self.frm, self.to = name, shape, frm, to
+        self.note, self.get = note, get
+
+    @property
+    def nelem(self) -> int:
+        return int(np.prod(self.shape)) if len(self.shape) else 1
+
+    @property
+    def n_per_row(self) -> int:
+        """ne[0]: the fastest-moving dimension, which is the one a block quant
+        divides. In numpy order that is the LAST axis."""
+        return int(self.shape[-1]) if len(self.shape) else 1
+
+    @property
+    def rank(self) -> int:
+        return int(np.count_nonzero(np.array(self.shape) != 1)) or 1
+
+
+def plan_target(row: PlanRow, args) -> tuple[GGMLQuantizationType, str]:
+    """(type to write, why it is not the exception type).
+
+    Order matters and is the same order tools/nllb-quantize.cpp applies:
+    the never-quantise set first, then the --quantize/--keep selection, then
+    the base type.
+    """
+    base = row.frm if args.outtype == "keep" else BASE_TYPES[args.outtype]
+
+    if should_keep_f32(row.name):
+        # position_embd is a sinusoidal table, 4 MB, read by row and never
+        # multiplied - quantising it buys nothing and costs exactness. Norms
+        # and biases are where precision loss compounds. Under --outtype keep
+        # this leaves them alone rather than upcasting them.
+        keep = row.frm if args.outtype == "keep" else GGMLQuantizationType.F32
+        matched = any(fnmatch.fnmatch(row.name, g) for g in args.quantize)
+        return keep, "never quantised" if matched else ""
+
+    if not any(fnmatch.fnmatch(row.name, g) for g in args.quantize):
+        return base, ""
+    if any(fnmatch.fnmatch(row.name, g) for g in args.keep):
+        return base, "--keep"
+    if row.rank < args.min_rank:
+        return base, f"rank {row.rank} < {args.min_rank}"
+
+    target = QUANT_TYPES.get(args.type) or WRITABLE[args.type]
+    blck, _ = GGML_QUANT_SIZES[target]
+    if row.n_per_row % blck != 0:
+        # trap 34: legal for NLLB (every row is 1024 or 4096) but never assume
+        return base, f"row {row.n_per_row} not a multiple of {blck}"
+    if row.frm == target:
+        return target, "already"
+    return target, ""
+
+
+def print_plan(rows, full: bool = True) -> tuple[int, int, int]:
+    """The table, and (n changed, in bytes, out bytes).
+
+    `full` prints every tensor; otherwise only the ones whose type changes,
+    which is what a plain f32 or f16 conversion wants - 510 rows saying
+    "F32 -> F32" is not a report, it is a wall.
+    """
+    w = max((len(r.name) for r in rows), default=8)
+    in_bytes = out_bytes = n_changed = 0
+    shown = [r for r in rows if full or r.to != r.frm or r.note]
+    if shown:
+        print(f"\n{'tensor':<{w}}  {'shape':>18}  {'from':>6} -> {'to':<6}  "
+              f"{'MB':>8}  note")
+        print("-" * (w + 60))
+    for r in rows:
+        in_bytes += type_bytes(r.nelem, r.frm)
+        out_bytes += type_bytes(r.nelem, r.to)
+        if r.to != r.frm:
+            n_changed += 1
+        if r not in shown:
+            continue
+        shape = "x".join(str(int(d)) for d in r.shape if d > 1) or "1"
+        print(f"{r.name:<{w}}  {shape:>18}  {r.frm.name:>6} -> "
+              f"{r.to.name:<6}  {type_bytes(r.nelem, r.to)/1e6:8.1f}  {r.note}")
+    if shown:
+        print("-" * (w + 60))
+    print(f"{len(rows)} tensor(s), {n_changed} written at a different type")
+    print(f"tensor bytes: {in_bytes/1e9:.3f} GB -> {out_bytes/1e9:.3f} GB"
+          + (f" ({in_bytes/out_bytes:.2f}x smaller)"
+             if out_bytes and out_bytes < in_bytes else ""))
+    return n_changed, in_bytes, out_bytes
+
+
+def write_tensor(w: GGUFWriter, row: PlanRow, quiet: bool = False) -> None:
+    """Materialise one planned tensor into the writer.
+
+    add_tensor infers the shape from the array, so the shape is never passed:
+    reader.shape is ne order (n_per_row first) and reader.data is already numpy
+    order, and passing one with the other is how a file comes out transposed.
+    """
+    arr = row.get()
+    if row.to == row.frm and row.to not in QUANT_TYPES:
+        w.add_tensor(row.name, np.ascontiguousarray(arr), raw_dtype=row.frm)
+        return
+    if row.to == row.frm and row.to in QUANT_TYPES:
+        # already at the target: pass the blocks through untouched rather than
+        # dequantise and requantise, which is not idempotent for every type.
+        w.add_tensor(row.name, arr, raw_dtype=row.frm)
+        return
+
+    if row.to == GGMLQuantizationType.F32:
+        w.add_tensor(row.name, np.ascontiguousarray(arr, dtype=np.float32))
+        return
+    if row.to == GGMLQuantizationType.F16:
+        w.add_tensor(row.name, np.ascontiguousarray(arr).astype(np.float16))
+        return
+
+    rows2d = np.ascontiguousarray(arr, dtype=np.float32).reshape(-1, row.n_per_row)
+    q = quants.quantize(rows2d, row.to)
+    if not quiet:
+        back = quants.dequantize(q, row.to).astype(np.float32)
+        rms = float(np.sqrt(np.mean((rows2d - back) ** 2)))
+        scale = float(np.sqrt(np.mean(rows2d ** 2))) or 1.0
+        print(f"  {row.to.name:<5} {row.name:<44} rms={rms:.4e}  "
+              f"rms/rms(w)={rms/scale:.4e}")
+    w.add_tensor(row.name, q, raw_dtype=row.to)
+
+
+def verify_written(out: Path, rows, want_tokenizer: bool) -> GGUFReader:
+    """Reopen the file and assert what was written is what was planned.
+
+    Names, order, shapes and types - and, when the file is supposed to be
+    usable, the six keys nllb_vocab_load refuses a file for. The requantise
+    mode adds the metadata comparison in verify_against(); this part is what
+    BOTH modes can check, including a fresh conversion that has nothing to be
+    compared against.
+    """
+    back = GGUFReader(out, "r")
+    assert len(back.tensors) == len(rows), \
+        f"tensor count {len(back.tensors)} != planned {len(rows)}"
+    for r, t in zip(rows, back.tensors):
+        assert str(t.name) == r.name, f"tensor order changed: {t.name} != {r.name}"
+        assert t.tensor_type == r.to, \
+            f"{r.name}: wrote {t.tensor_type.name}, planned {r.to.name}"
+        got = tuple(int(d) for d in reversed(t.shape) if d > 1) or (1,)
+        want = tuple(int(d) for d in r.shape if d > 1) or (1,)
+        assert got == want, f"{r.name}: shape {got} != planned {want}"
+    if want_tokenizer:
+        missing = [k for k in REQUIRED_TOKENIZER_KEYS if back.get_field(k) is None]
+        assert not missing, (
+            f"the file is missing {missing}, which nllb_vocab_load refuses a "
+            f"file for (trap 32). It will load its weights and then fail to "
+            f"translate.")
+    print(f"[verify] {len(back.tensors)} tensors keep name, order, shape and "
+          f"planned type"
+          + ("; all 6 required tokenizer keys present" if want_tokenizer else ""))
+    return back
+
+
+def verify_against(reader: GGUFReader, back: GGUFReader) -> None:
+    """Requantise mode only: the output's metadata IS the input's metadata.
+
+    Names surviving is not the claim - the VALUES are. A charsmap that comes
+    back one byte short still has its key.
+    """
+    drop = {Keys.General.QUANTIZATION_VERSION, Keys.General.FILE_TYPE} | READER_SYNTHETIC
+    bk = set(back.fields) - drop
+    ik = set(reader.fields) - drop
+    assert bk == ik, (f"key set changed on write: lost {sorted(ik - bk)}, "
+                      f"gained {sorted(bk - ik)}")
+    for key in sorted(ik):
+        a, b = reader.get_field(key), back.get_field(key)
+        assert a.types == b.types, f"{key}: type changed {a.types} -> {b.types}"
+        va, vb = a.contents(), b.contents()
+        if isinstance(va, list):
+            assert len(va) == len(vb), f"{key}: length {len(va)} -> {len(vb)}"
+            assert va == vb, f"{key}: values changed"
+        else:
+            assert va == vb, f"{key}: {va!r} -> {vb!r}"
+    for a, b in zip(reader.tensors, back.tensors):
+        if b.tensor_type == a.tensor_type:
+            assert np.array_equal(a.data, b.data), f"{a.name}: unquantised data moved"
+    print(f"[verify] {len(bk)} metadata keys survive with identical types AND "
+          f"values; every untouched tensor is byte-identical")
+
+
+# --------------------------------------------------------------------------
+# mode 2: GGUF -> GGUF
+# --------------------------------------------------------------------------
+
+def requantize(args) -> int:
+    """Read a GGUF, write it again with selected tensors at another type.
+
+    Step 10, section 7.0's measurement tool: it exists so "what does Q8_0 on
+    token_embd do to the per-decision headroom" could be answered before any
+    C++ was written. tools/nllb-quantize.cpp supersedes it for SHIPPING files
+    (it has the K-quants and the named mixes); this path stays because it needs
+    no build, it is the only one that can requantise on a machine without a
+    compiler, and step 10's numbers were measured with it.
+
+    Two things here are load-bearing and are the reason the metadata is copied
+    by ITERATING the reader rather than by naming keys: since step 8 the GGUF
+    carries the whole tokenizer - charsmap, merge hash, added tokens, UAX#29
+    grapheme tables - and nllb_vocab_load refuses a file missing any of them.
+    """
+    if not args.quantize and args.outtype == "keep":
+        return fail("nothing to do: this input is a GGUF, so --outtype defaults "
+                    "to `keep`. Pass --quantize GLOB (with --type), or "
+                    "--outtype f16 to rewrite the base type.")
+
+    reader = GGUFReader(args.infile, "r")
+    arch_f = reader.get_field(Keys.General.ARCHITECTURE)
+    arch = arch_f.contents() if arch_f else ARCH
+    if arch != ARCH:
+        print(f"  ! general.architecture is {arch!r}, not {ARCH!r} - "
+              f"requantising it anyway", file=sys.stderr)
+
+    have_tokenizer = all(reader.get_field(k) is not None
+                         for k in REQUIRED_TOKENIZER_KEYS)
+    if not have_tokenizer:
+        print("  ! the INPUT is already missing tokenizer keys nllb_vocab_load "
+              "requires - it was probably converted with --no-tokenizer. The "
+              "output will be unusable for the same reason.", file=sys.stderr)
+
+    # ---- plan (no weight data is read) ------------------------------------
+    rows = []
+    for t in reader.tensors:
+        # reader.shape is ne order; PlanRow wants numpy order, so reverse it
+        # and drop nothing - n_per_row is then shape[-1] in both modes.
+        shape = tuple(int(d) for d in reversed(t.shape))
+        row = PlanRow(str(t.name), shape, t.tensor_type, t.tensor_type, "",
+                      (lambda t=t: t.data))
+        row.to, row.note = plan_target(row, args)
+        # A source that is itself quantised has to be widened before it can be
+        # quantised again, and that is not free precision: Q8_0 -> Q4_0 goes
+        # through f32 and carries both errors. Say so.
+        if row.frm in QUANT_TYPES and row.to != row.frm:
+            row.get = (lambda t=t: dequant_to_f32(t))
+            row.note = (row.note + " (via f32, two lots of error)").strip()
+        rows.append(row)
+
+    print_plan(rows)
+    if args.dry_run:
+        return 0
+
+    # ---- write ------------------------------------------------------------
+    w = GGUFWriter(args.outfile, arch, use_temp_file=False)
+
+    copied = []
+    for key, field in reader.fields.items():
+        if key in SKIP_KEYS:
+            continue
+        vtype = field.types[0]
+        sub = field.types[-1] if vtype == GGUFValueType.ARRAY else None
+        w.add_key_value(key, field.contents(), vtype, sub_type=sub)
+        copied.append(key)
+
+    # THE ASSERTION (trap 32). Not a comment: a check.
+    expected = set(reader.fields) - SKIP_KEYS
+    missing, extra = expected - set(copied), set(copied) - expected
+    assert not missing, f"metadata keys LOST: {sorted(missing)}"
+    assert not extra, f"metadata keys invented: {sorted(extra)}"
+    print(f"\ncopied {len(copied)} metadata key(s) verbatim")
+
+    w.add_quantization_version(GGML_QUANT_VERSION)
+    # general.file_type is in WRITER_OWNED - excluded from the copy loop
+    # because the writer is supposed to produce it - and for the whole of step
+    # 10 NOBODY TOLD THE WRITER TO. The files simply had no file_type, and the
+    # assertion above could not see it, because FILE_TYPE is inside SKIP_KEYS.
+    # A key you exclude from a copy because something else owns it is a key you
+    # must then check that something else actually wrote.
+    w.add_file_type(file_type_for(rows))
+
+    for row in rows:
+        write_tensor(w, row)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file(progress=True)
+    w.close()
+
+    print(f"\nwrote {args.outfile}  {args.outfile.stat().st_size/1e9:.3f} GB")
+    if not args.no_verify:
+        back = verify_written(args.outfile, rows, have_tokenizer)
+        verify_against(reader, back)
+    return 0
+
+
+def dequant_to_f32(t) -> np.ndarray:
+    """A reader tensor as f32 rows, shape (nrows, n_per_row)."""
+    if t.tensor_type in (GGMLQuantizationType.F32, GGMLQuantizationType.F16,
+                         GGMLQuantizationType.BF16):
+        a = t.data
+        if t.tensor_type == GGMLQuantizationType.BF16:
+            a = (a.view(np.uint16).astype(np.uint32) << 16).view(np.float32)
+        return np.asarray(a, dtype=np.float32).reshape(-1, int(t.shape[0]))
+    return quants.dequantize(t.data, t.tensor_type) \
+                 .astype(np.float32).reshape(-1, int(t.shape[0]))
+
+
+def fail(msg: str) -> int:
+    print(f"error: {msg}", file=sys.stderr)
+    return 2
+
+
+# --------------------------------------------------------------------------
+# mode 1: HF checkpoint -> GGUF
+# --------------------------------------------------------------------------
+
+def convert(args) -> int:
     md = args.model_dir
     with open(md / "config.json", encoding="utf-8") as f:
         cfg = json.load(f)
@@ -669,8 +1103,8 @@ def main() -> int:
 
     # ---- metadata ---------------------------------------------------------
     w.add_name(args.name or md.name)
-    w.add_file_type(gguf.LlamaFileType.ALL_F32 if args.outtype == "f32"
-                    else gguf.LlamaFileType.MOSTLY_F16)
+    # general.file_type is written at the END of this function, from the plan
+    # rather than from --outtype. See file_type_for().
     w.add_context_length(max_pos)
     w.add_embedding_length(d_model)
     w.add_vocab_size(n_vocab)
@@ -776,19 +1210,20 @@ def main() -> int:
                   f"{meta.get('merges_hash_source', 'tokenizer.json')})")
 
     # ---- tensors ----------------------------------------------------------
-    n_written = 0
+    # PLANNED first, written second. The plan has to exist before
+    # general.file_type can be written honestly, it is what --dry-run returns,
+    # and it is what verify_written() checks the file against afterwards. It
+    # costs nothing: on the safetensors path ck.get() hands back a memmap view,
+    # so planning reads shapes and dtypes and not one weight byte.
+    rows: list[PlanRow] = []
 
     def emit(name: str, arr: np.ndarray):
-        nonlocal n_written
-        arr = np.ascontiguousarray(arr)
-        if arr.dtype != np.float32:
-            arr = arr.astype(np.float32)
-        if args.outtype == "f16" and not should_keep_f32(name):
-            arr = arr.astype(np.float16)
-        w.add_tensor(name, arr)
-        n_written += 1
-        if n_written <= 4 or n_written % 25 == 0:
-            print(f"  {name:44s} {str(list(arr.shape)):18s} {arr.dtype}")
+        frm = (GGMLQuantizationType.F16 if arr.dtype == np.float16
+               else GGMLQuantizationType.F32)
+        row = PlanRow(name, tuple(int(d) for d in arr.shape), frm, frm, "",
+                      (lambda a=arr: a))
+        row.to, row.note = plan_target(row, args)
+        rows.append(row)
 
     embed = ck.first("model.shared.weight",
                      "model.encoder.embed_tokens.weight",
@@ -835,14 +1270,139 @@ def main() -> int:
             if not np.array_equal(lm, embed):
                 emit("output.weight", lm)
 
+    print_plan(rows, full=bool(args.quantize) or args.dry_run)
+    if args.dry_run:
+        return 0
+
+    # general.file_type LAST, from what the plan says will be written. The
+    # writer keeps its kv in a dict until write_kv_data_to_file, so adding a
+    # key after the tensors is legal - and it is the only ordering in which
+    # this key can tell the truth about a mix.
+    ft = file_type_for(rows)
+    w.add_file_type(ft)
+    if not args.quantize:
+        # With no exceptions asked for, the plan must agree with the rule this
+        # converter hard-coded for two steps. An assertion, not a comment: it
+        # is what says the bytes-dominant rule is a bug fix and not a change.
+        expect = {"f32":  gguf.LlamaFileType.ALL_F32,
+                  "f16":  gguf.LlamaFileType.MOSTLY_F16,
+                  "bf16": gguf.LlamaFileType.MOSTLY_BF16}[args.outtype]
+        assert ft == expect, f"file_type {ft.name} != the old rule's {expect.name}"
+
+    for row in rows:
+        write_tensor(w, row)
+
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
     w.close()
 
-    print(f"\nwrote {out}  ({n_written} tensors, "
+    print(f"\nwrote {out}  ({len(rows)} tensors, "
           f"{os.path.getsize(out) / 1e9:.2f} GB on disk)")
+    if not args.no_verify:
+        verify_written(out, rows, want_tokenizer=not args.no_tokenizer)
     return 0
+
+
+# --------------------------------------------------------------------------
+# which mode
+# --------------------------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("input", type=Path,
+                    help="an HF snapshot DIR (convert: config.json + weights + "
+                         "tokenizer files), or a .gguf FILE (requantise)")
+    ap.add_argument("out_positional", type=Path, nargs="?", default=None,
+                    metavar="outfile",
+                    help="output path. The same thing as --outfile; it is "
+                         "positional as well so the old requantize_gguf.py "
+                         "command line still works.")
+    ap.add_argument("-o", "--outfile", type=Path, default=None)
+
+    ap.add_argument("--outtype", choices=sorted(WRITABLE) + ["keep"], default=None,
+                    help="the BASE type: what an UNMATCHED tensor is written "
+                         "as. Default f32 when converting, `keep` when "
+                         "requantising (leave every unmatched tensor exactly "
+                         "as the input has it).")
+    ap.add_argument("--quantize", action="append", default=[], metavar="GLOB",
+                    help="tensor-name glob whose matches get --type instead of "
+                         "the base type; repeatable")
+    ap.add_argument("--keep", action="append", default=[], metavar="GLOB",
+                    help="never quantise these, even if --quantize matches; "
+                         "repeatable")
+    ap.add_argument("--type", default="q8_0", choices=sorted(WRITABLE),
+                    help="the EXCEPTION type, for tensors --quantize matches "
+                         "(default q8_0)")
+    ap.add_argument("--min-rank", type=int, default=2,
+                    help="skip tensors with fewer dims (default 2: never touch "
+                         "norms or biases)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print the plan and the sizes, write nothing")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip the reopen-and-check pass. It costs one full "
+                         "read of the file it just wrote, and it is the only "
+                         "thing standing between a dropped charsmap and a "
+                         "1.2 GB file that will not translate.")
+
+    ap.add_argument("--encoder-only", action="store_true",
+                    help="convert mode: skip decoder tensors - smaller file "
+                         "for milestone 1")
+    ap.add_argument("--no-tokenizer", action="store_true",
+                    help="convert mode: write weights only")
+    ap.add_argument("--embed-merges", action="store_true",
+                    help="convert mode: write the merge list into the GGUF "
+                         "even when the C++ could derive it from the vocab "
+                         "order (~6 MB, saves ~0.4 s of load time). A "
+                         "vocabulary the derivation does not fit embeds the "
+                         "list regardless.")
+    ap.add_argument("--name", default=None, help="convert mode: general.name")
+    args = ap.parse_args()
+
+    if args.out_positional is not None and args.outfile is not None:
+        return fail("the output path was given twice, positionally and as "
+                    "--outfile")
+    args.outfile = args.outfile if args.outfile is not None else args.out_positional
+
+    # THE MODE IS THE INPUT, not a flag. A directory has a config.json to build
+    # metadata from; a GGUF has metadata to copy. Nothing else differs, which
+    # is why nothing else selects.
+    if not args.input.exists():
+        return fail(f"{args.input} does not exist")
+    is_gguf = args.input.is_file()
+    if is_gguf and args.input.suffix.lower() != ".gguf":
+        return fail(f"{args.input} is a file but not a .gguf. Pass the HF "
+                    f"snapshot DIRECTORY to convert, or a .gguf to requantise.")
+
+    if args.outtype is None:
+        args.outtype = "keep" if is_gguf else "f32"
+    if args.outtype == "keep" and not is_gguf:
+        return fail("--outtype keep needs a GGUF input: a checkpoint has no "
+                    "GGUF tensor types to keep.")
+    if args.outtype in QUANT_TYPES:
+        return fail(
+            f"--outtype {args.outtype} would quantise EVERY tensor, token_embd "
+            f"included, and step 10 measured that as the decision that breaks "
+            f"first: the ids diverge at 05_german step 23 on a margin of "
+            f"1.822e-02. A mix is not a type, so say the mix:\n"
+            f"    --outtype f16 --quantize '*' --min-rank 2 --type {args.outtype}\n"
+            f"    --outtype f16 --quantize token_embd.weight --type {args.outtype}")
+    if args.quantize and args.type == args.outtype:
+        print(f"  ! --quantize selects tensors for {args.type}, which is also "
+              f"the base type, so the selection changes nothing",
+              file=sys.stderr)
+
+    if is_gguf:
+        if args.outfile is None:
+            return fail("requantise mode needs an output path: "
+                        "<in.gguf> <out.gguf>")
+        args.infile = args.input
+        args.outfile.parent.mkdir(parents=True, exist_ok=True)
+        return requantize(args)
+
+    args.model_dir = args.input
+    return convert(args)
 
 
 if __name__ == "__main__":

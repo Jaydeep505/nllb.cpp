@@ -33,9 +33,9 @@ hr() { printf '\n\033[1m===== %s =====\033[0m\n' "$*"; }
 # Two mixes. Both start from the f16 file so the ONLY variable against the
 # step 7 baseline is which tensors became Q8_0.
 hr "1/5  building the quantised files"
-[ -f "$Q8E" ] || $PY tools/requantize_gguf.py "$F16" "$Q8E" \
+[ -f "$Q8E" ] || $PY tools/convert_nllb_to_gguf.py "$F16" "$Q8E" \
     --quantize 'token_embd.weight' --type q8_0
-[ -f "$Q8A" ] || $PY tools/requantize_gguf.py "$F16" "$Q8A" \
+[ -f "$Q8A" ] || $PY tools/convert_nllb_to_gguf.py "$F16" "$Q8A" \
     --quantize '*' --min-rank 2 --type q8_0
 ls -la "$F32" "$F16" "$Q8E" "$Q8A"
 
