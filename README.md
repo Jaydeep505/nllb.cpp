@@ -13,15 +13,19 @@ tokenizer are each verified against HuggingFace — see `DECODER.md`,
 `GENERATE.md`, `CACHE.md`, `PROFILE.md`, `PRECISION.md`, `TOKENIZER.md`. The
 CLI and the first text → text gate are `CLI.md`.
 
-Backends: `BACKEND.md` (step 13 Metal, step 14 OpenCL, step 16 CUDA) and
-`BUILD.md` for the flags. Metal ships and is verified on an M1; OpenCL and CUDA
-are built and CI-guarded with **no graph run on them yet**, and their
-acceptance tables in `BACKEND.md` are deliberately blank until one is.
+Backends: `BACKEND.md` (step 13 Metal, step 14 OpenCL, step 16 CUDA, step 17
+Vulkan) and `BUILD.md` for the flags. Metal ships and is verified on an M1.
+Vulkan passes every gate on Mesa lavapipe (step 17, which also found and
+worked around a ggml-vulkan stride bug; the `vulkan` CI job re-asserts it). OpenCL and CUDA are built and
+CI-guarded with **no graph run on them yet**. The Snapdragon X Elite run of
+OpenCL + Vulkan is packaged by `.github/workflows/xelite.yml`; see
+`QDC-XELITE.md`.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release                                    # CPU, + Metal on macOS
 cmake -B build -DNLLB_CUDA=ON   -DCMAKE_CUDA_ARCHITECTURES=75 ...            # NVIDIA
 cmake -B build -DNLLB_OPENCL=ON [-DNLLB_ADRENO=ON] ...                       # OpenCL
+cmake -B build -DNLLB_VULKAN=ON ...                                          # Vulkan (needs glslc)
 ./build/bin/nllb-cli --list-backends
 ```
 

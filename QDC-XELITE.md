@@ -1,371 +1,191 @@
-# Running nllb.cpp on a Snapdragon X Elite (Adreno X85) via Qualcomm Device Cloud
+# nllb.cpp on a Snapdragon X Elite (Adreno X1-85) via Qualcomm Device Cloud
 
-Target: the **CRD8380X Compute Reference Design, Windows on Arm64**, with an
-**Adreno X85** — one of the three GPUs llama.cpp's OpenCL backend actually
-verifies against. This is the real thing, not a substitute.
-
-**The llama.cpp "Windows Arm64" page you screenshotted at the start is finally
-the right recipe.** It was the wrong one for the ROG Strix (x86-64); it is the
-right one here.
+Target: the **CRD8380X Compute Reference Design, Windows 11 on Arm**, Adreno
+X1-85. Two GPU backends are tested in one session: **OpenCL** (with ggml's
+Adreno kernels) and **Vulkan**. Step 17 rewrote this page; the older recipe
+(MSVC `-A ARM64` cross-compile from the G531) **does not configure** at the
+pinned ggml. See "What changed" at the bottom.
 
 ---
 
-## Read this before you click "Next"
+## The short version
 
-Two facts about QDC shape everything below:
+1. Push the repo to GitHub with `vendor/ggml` at **`7840aab`**.
+2. **Actions → xelite → Run workflow.** ~30-40 min. It builds natively on a
+   `windows-11-arm` runner, tests the CPU path there, and uploads
+   **`nllb-xelite.zip`** (~60 MB, no model inside).
+3. Start a QDC session on the X Elite CRD (give an SSH key at "Test
+   Configuration"), copy the zip over, unzip, and run:
 
-1. **Devices are wiped after every session ends.** Nothing you install
-   persists. So the goal is *one self-contained zip* that needs nothing
-   installed on the device — no Visual Studio, no Python, no CMake.
-2. **You give an SSH public key during session setup.** That is worth doing at
-   the "Test Configuration" step you are on now: SSH + `scp` beats driving a
-   mirrored screen for anything involving a command line and a log file.
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\run.ps1
+   ```
 
-So: **do not start the session yet.** Build the zip on the G531 first. Minutes
-only start counting when the session starts, and you have 1000 — but a session
-spent discovering you have nothing to run is still a session.
+4. Copy **`results.zip`** off the device before the session ends. QDC wipes it.
+
+That first session needs **no model**: every gate in it compares two C++ paths
+on a 17 MB random fixture, so the weights cancel. Bring the real
+`nllb-600M-f16.gguf` (+ `ref\` from the Mac) to a second session, once the
+first one is green:
+
+```powershell
+.\run.ps1 -Model C:\m\nllb-600M-f16.gguf -Ref C:\m\ref
+```
 
 ---
 
-## Which machine does what — you need both
+## Why the build moved off the G531
 
-The M1 and the G531 are not interchangeable here, and the split is not
-arbitrary.
-
-| | job | why that machine |
+| | old recipe (G531, x64 → Arm64) | now |
 |---|---|---|
-| **G531 (Windows x64)** | builds the Arm64 binaries | A Windows target needs MSVC's headers and import libraries, and those exist on Windows. |
-| **M1 Mac** | makes the fixture, holds the reference | It has the real checkpoint, `ref/`, and the verified CPU and Metal baselines. `nllb-dump-states --diff` needs *both* sides and the Mac is the side that already means something. |
+| compiler | MSVC `cl.exe`, `-A ARM64` | **clang** (LLVM 22), MSVC Arm64 libs |
+| why it had to change | ggml: `message(FATAL_ERROR "MSVC is not supported for ARM, use clang")` in `src/ggml-cpu/CMakeLists.txt` | — |
+| Vulkan | would have had to build `vulkan-shaders-gen` for x64 while building everything else for Arm64 | host = target, nothing to cross |
+| CPU flags | `-march=armv8.7-a -ffp-model=fast` (llama.cpp's toolchain file) | `-DGGML_CPU_ARM_ARCH=armv8.7-a`, **no** `-ffp-model=fast` |
+| CRT | dynamic (needs the VC++ redist on a wiped device) | **static** (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`) |
 
-**Can you cross-compile for Windows-on-Arm from the Mac instead? Technically
-yes, practically no.** Two routes exist — `xwin` (fetches the MSVC CRT and
-Windows SDK from Microsoft's CDN, then clang targets `aarch64-pc-windows-msvc`)
-and `llvm-mingw` targeting `aarch64-w64-mingw32`. Both are real and maintained.
-Neither is a path ggml or this project has ever taken, and picking one means
-debugging a novel toolchain at the same time as a new GPU backend, with no way
-to tell which layer a failure came from. The G531 route is twenty minutes of
-installer checkboxes and is what llama.cpp's own Windows Arm64 page assumes.
+GitHub's `windows-11-arm` runners are free on public repos and available to
+private ones since January 2026. The image already has VS 2022 with the Arm64
+tools, LLVM 22, CMake, Ninja and Python; the workflow adds the LunarG Vulkan SDK
+for Windows on Arm and builds the Khronos OpenCL loader from source.
 
-**If you would rather build on the Mac, change the DEVICE, not the toolchain.**
-QDC also offers the **Dragonwing RB3 Gen 2** — QCS6490, **Adreno 643**, running
-Qualcomm Linux. Two things make that attractive from an M1:
+**One trap the workflow is built around:** the runner is a Cobalt 100
+(Neoverse N2, Armv9 **with SVE2**); Oryon is Armv8.7 **without SVE**.
+`GGML_NATIVE=ON` on the runner would emit SVE into the CPU backend and the
+binary would die with an illegal instruction on the X Elite — in the reference
+path every GPU number is compared against. Hence `GGML_NATIVE=OFF` and one fixed
+`-march` for both machines, which also makes section 3 below an exact test.
 
-* **`docker run --platform linux/arm64` is NATIVE on Apple silicon**, not
-  emulated. Building aarch64 Linux binaries on the M1 is a native build at full
-  speed, which is far less friction than any Windows cross-compile.
-* Adreno 643 is an A6x **on an IoT platform**, which is exactly the category
-  llama.cpp's OpenCL docs say is supported ("A6x GPUs with a recent driver and
-  compiler are supported; usually found in IoT platforms") — as opposed to A6x
-  in phones, which they warn against.
-
-The trade is that Adreno 643 is a much weaker GPU than X85 and is *supported*
-rather than *verified*, and the free minutes you were granted appear to be
-X-Elite-specific — check the Devices tab before planning around it. If the goal
-is "does this backend work on a real Adreno", X85 is the better evidence. If
-the goal is "get something running with the least new toolchain", RB3 Gen 2
-from an arm64 container on the M1 is the shorter road.
-
-### The split, concretely
-
-On the **Mac**, before touching the G531:
-
-```bash
-python tests/make_shape_model.py models/shape-small-f16.gguf --d-model 256 \
-    --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 \
-    --n-ctx 64 --outtype f16
-python tests/make_shape_ref.py ref-shape/ --vocab 4000 --n-ctx 64 \
-    --max-new 24 --lengths 6 12 24 40
-
-# the reference side of the --diff, on a machine whose CPU path is proven
-./build/bin/nllb-dump-states models/shape-small-f16.gguf ref-shape/ mac-cpu.bin -t 8
-```
-
-Copy `models/shape-small-f16.gguf`, `ref-shape/` and `mac-cpu.bin` to the G531
-and into the zip. Then after the session, back on the Mac:
-
-```bash
-./build/bin/nllb-dump-states --diff mac-cpu.bin xelite-cpu.bin
-```
-
-That one command answers a question nothing else in this plan does: **did the
-Arm64 CPU path move?** If it did, no OpenCL number from that binary means
-anything yet, and `-ffp-model=fast` in the toolchain file is the first suspect.
+If you have Arm64 Windows hardware of your own, `tools/qdc/build-arm64.cmd` is
+the same recipe by hand.
 
 ---
 
-## Step 1 — cross-compilation toolchain on the G531 (one-off, ~20 min)
+## What is in the zip
 
-You are on x86-64 and the CRD is Arm64, so everything is cross-compiled.
-
-**Build Tools for Visual Studio 2022** — in the installer, tick:
-
-- **Desktop development with C++** (the base workload)
-- **MSVC v143 — VS 2022 C++ ARM64/ARM64EC build tools** ← the target libraries
-- **C++ Clang Compiler for Windows** ← the compiler
-
-Both of the last two are needed. clang targets `arm64-pc-windows-msvc`, so it
-still needs MSVC's ARM64 headers and import libraries; installing clang alone
-fails at link time with an error that names a missing library rather than a
-missing installer component.
-
-Then OpenCL for the Arm64 target:
-
-```powershell
-cd $env:USERPROFILE
-git clone https://github.com/microsoft/vcpkg
-.\vcpkg\bootstrap-vcpkg.bat
-.\vcpkg\vcpkg install opencl:arm64-windows      # NOTE the triplet
+```
+cpu\       nllb-cli, -test-cache, -test-precision, -dump-states, -bench, -probe-kv-ops
+opencl\    the same, built -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON, + OpenCL.dll + ocl-probe.exe
+vulkan\    the same, built -DNLLB_VULKAN=ON
+models\    shape-small-f16.gguf, shape-small-f32.gguf   (random weights, NLLB shape)
+ref-shape\ structural manifest for them (no goldens)
+baseline\  runner-cpu-f16.bin, runner-cpu-f32.bin       (the CI runner's CPU dump)
+run.ps1  sentences.txt  BUILD-INFO.txt  QDC-XELITE.md
 ```
 
-`opencl:x64-windows` is the wrong one — it would give you x64 import libraries
-for an Arm64 binary, and the failure is a link error a long way from the cause.
+**Three builds, one backend each, on purpose.** A missing `vulkan-1.dll` then
+cannot stop the OpenCL run, `cpu\` always starts, and `auto` is never
+ambiguous — in a build with both, ggml registers Vulkan *before* OpenCL and
+`auto` silently picks Vulkan (registry order in `ggml-backend-reg.cpp`).
 
-Work from the **"x64_arm64 Cross Tools Command Prompt for VS 2022"** (Start
-menu) so the ARM64 toolchain is on `PATH`.
+`vulkan-1.dll` is **not** shipped: the Adreno driver installs it in System32,
+and section 0 of the run says whether it is there. `OpenCL.dll` **is** shipped
+(the Khronos ICD loader); it finds the Adreno driver through the registry.
 
 ---
 
-## Step 1b — MSVC `-A ARM64` is the simpler route, and it is the better one here
+## What `run.ps1` does, and what to read in the output
 
-The toolchain file in `cmake/arm64-windows-llvm.cmake` is llama.cpp's route
-(clang, Ninja, `-march=armv8.7-a -ffp-model=fast`). **Try MSVC first.** The
-Visual Studio generator cross-compiles to Arm64 with one flag:
+Everything goes to `results\` with one `.txt` per step and a `SUMMARY.txt`.
 
-```powershell
-cmake -B build-arm64 -A ARM64 `
-    -DCMAKE_TOOLCHAIN_FILE="$env:USERPROFILE\vcpkg\scripts\buildsystems\vcpkg.cmake" `
-    -DVCPKG_TARGET_TRIPLET=arm64-windows `
-    -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON
-cmake --build build-arm64 --config Release -j
+| § | step | read this | means |
+|---|---|---|---|
+| 0 | environment | `vulkan-1.dll present`, `OpenCL.dll present` | if a DLL is absent that backend's rows say `DID NOT START` — a driver fact, not a bug |
+| 1 | `ocl-probe` | `VERDICT: USABLE`, exit code = usable devices | 0 → ignore every OpenCL row below |
+| 1b | `nllb-probe-kv-ops <b>` | the 45-row table | **Vulkan: the raw `K view` rows are EXPECTED to be BAD** (trap 55). **OpenCL: nobody knows yet** — BAD there means OpenCL needs the same workaround |
+| 2 | `--list-backends` | `Vulkan0 - Qualcomm(R) Adreno(TM) X1-85 GPU (igpu)`, `GPUOpenCL …` | stderr above it explains any dropped device |
+| 3 | CPU dump vs runner | `IDENTICAL` | same binary, different Arm64 CPU. **If this is not identical, stop: no GPU number means anything yet** |
+| 4 | cache gate per backend | `PASS`, `full = exact`, `[arena]` exact, `splits 1` on the cached step | traps 15/16 hold on the device. On a FAIL it re-runs once with `NLLB_KV_CONT` flipped and says whether that changed the verdict |
+| 5 | `precision cpu:<b>` | `exact ids`, `tightest headroom` | ids moving at f16 is information (trap 48), not automatically a bug |
+| 6 | states diff + bench | `worst rel` per record; `encoder pass` vs `with lm_head` | a REPORT. Does the divergence split at 8 columns like Metal's? |
+| 7 | real model (`-Model`) | the same gates on the 600M, text CPU vs GPU **byte-identical with every line present**, bench | the product claim |
+
+### What sandbox evidence says to expect (step 17, Mesa lavapipe)
+
+Vulkan has now run every one of these gates on a real Vulkan implementation
+(lavapipe: conformant Vulkan 1.4, on the CPU). On the shape fixture:
+
+```
+cache gate  vulkan f32/f16    PASS  full = exact, [arena] exact, splits 1 everywhere
+precision   cpu:vulkan f32    PASS  exact ids 96/96, tightest headroom 47.8x
+precision   cpu:vulkan f16    PASS  exact ids 96/96, tightest headroom  4.6x
+states      cpu vs vulkan f32 756/912 records differ, worst rel ~9e-4   <- half-precision
+                                                                          matmuls (trap 48)
+corrupt_backend.py on vulkan  7/7 as expected, the CPU's matrix unchanged
 ```
 
-Three reasons it is preferable, and the third is not about convenience:
-
-1. **It needs no clang and no Ninja** — only the *MSVC v143 ARM64/ARM64EC build
-   tools* component. One installer checkbox instead of two plus a toolchain file.
-2. **It is the generator you already have working**, so a failure is about
-   Arm64 and not about a build system you adopted the same afternoon.
-3. **It avoids `-ffp-model=fast`.** That flag is in the clang toolchain file
-   because llama.cpp puts it there, and it is a change of float semantics that
-   nothing in this project's calibration ladder was measured under. MSVC's
-   default is strict-ish IEEE, so the Arm64 CPU path has a far better chance of
-   coming out bit-identical — which is exactly what step 4b below checks.
-
-Binaries land in `build-arm64\bin\Release\` (multi-config generator — see
-BUILD.md). Keep the clang toolchain file as the fallback: if MSVC's Arm64
-codegen miscompiles ggml, switch to it and note in `BACKEND.md` that the
-numbers came from a build with relaxed float semantics.
+**The f32 file diverges at ~9e-4 on Vulkan** — f16-sized noise from an f32 file,
+the same thing trap 48 found on Metal. So the real 600M's headroom on the Adreno
+will be closer to Metal's f16 figure (0.39x) than to the CPU's, and a moved id
+there is expected rather than alarming. Read `[margin]` before deciding.
 
 ---
 
-## Step 4b — the diff that actually controls for something
+## Trap 55, found in the sandbox before any Adreno saw it
 
-The plan used to be "dump on the Mac, dump on the CRD, diff". **That comparison
-is confounded** if the two machines are on different ggml commits — and they
-are: a Windows checkout reported `ggml version 0.20.2 / 8c63e709` while the
-handoff records steps 13-14 as built against `0.23.0 / 7840aab`. A diff across
-211 ggml commits measures the bump, not the architecture.
+The first Vulkan run of `nllb-test-cache` went **red**: `full = exact`, but
+`step` and `chunk` wrong from layer 1 at rel 0.16, and `[arena]` differing.
+`nllb-probe-kv-ops` (new) isolated it to one op:
 
-**The controlled comparison is x64-Windows against Arm64-Windows.** Same repo,
-same submodule commit, same source, one variable: the architecture and the
-compiler targeting it.
-
-```powershell
-# on the x64 build you already have working
-.\build\bin\Release\nllb-dump-states.exe models\shape-small-f16.gguf ref-shape\ win-x64.bin -t 4
-
-# ... and after the session, on the Arm64 dump brought back from the CRD
-.\build\bin\Release\nllb-dump-states.exe --diff win-x64.bin xelite-cpu.bin
+```
+mul_mat(K view, q)    Tn=1  n_past=0   rel 2.6e+00  BAD
+mul_mat(cont(K), q)   Tn=1  n_past=0   rel 9.4e-08  ok
 ```
 
-`IDENTICAL` means the Arm64 CPU path is sound and any OpenCL divergence is
-OpenCL's. Anything else and the architecture moved the arithmetic, which has to
-be understood before a single GPU number means anything.
+ggml-vulkan's `mul_mat` calls a tensor contiguous when dims 0 and 1 are
+(`ggml_vk_dim01_contiguous`) and then steps between batch matrices by
+`ne00*ne01`, **ignoring `nb[2]`**. The self-attention K view is `[HD, n_kv, H]`
+over a `[HD, n_ctx, H]` cache: rows contiguous, heads `n_ctx` rows apart. So
+every head after the first read the wrong rows whenever `n_kv < n_ctx` — i.e.
+on every decode step of `nllb-cli`. `full = exact` could not see it because
+that pass sizes the cache to exactly the prefix, where there is no gap.
+The same code is in ggml master as of 2026-09-25 (read, not run).
 
-Do the Mac diff too if you like, but fix the submodule pin first — otherwise it
-answers a different question than the one you asked.
+**Fix, in `src/nllb.cpp`:** on Vulkan only, `ggml_cont` the K view before the
+matmul (`nllb_model::kv_k_cont`; `NLLB_KV_CONT=0/1` overrides). The copy is
+exact: `nllb-dump-states` is IDENTICAL on the CPU with it forced on, and the CPU
+path is untouched by default. CI runs the gate with it OFF and requires red, so
+the day ggml fixes this the job says so.
 
 ---
 
-## Step 2 — the probe first, because it is 21 KB and answers the question
+## Things that go red and are not bugs
 
-`ocl-probe` is plain C, links nothing, and `dlopen`s the vendor OpenCL library
-at runtime. On Windows that is `LoadLibraryA("OpenCL.dll")`, which the Adreno
-driver on the CRD installs. So it needs no ICD loader and no ggml, and it tells
-you whether Adreno X85 will work at all.
+* `nllb-test-mmap` — not shipped: Windows has no mmap in this codebase, and
+  neither OpenCL nor Vulkan can wrap host memory (`buffer_from_host_ptr = false`).
+* `--backend metal` / `cuda` — correct: a named backend never falls back.
+* A raw `K view` row BAD in `1b-probe-kv-ops-vulkan.txt` — expected, trap 55.
+* `nllb-test-decoder` on an f16 file — trap 19; not in the zip.
 
-```powershell
-cmake -B build-arm64 -G Ninja `
-    -DCMAKE_TOOLCHAIN_FILE=cmake\arm64-windows-llvm.cmake `
-    -DCMAKE_PREFIX_PATH="$env:USERPROFILE\vcpkg\installed\arm64-windows" `
-    -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-arm64 --target ocl-probe
-```
+## What is still not proven after a green session
 
-`-DNLLB_ADRENO=ON` is right here and nowhere else — `NLLB_OPENCL` defaults
-ggml's Adreno kernels **off** because upstream's default (on) is wrong on every
-other target. This is the target it was written for.
+* Anything about **speed** beyond this one machine: read `nllb-bench`'s
+  `encoder pass` and `with lm_head` lines separately (step 13: a GPU can win the
+  encoder and lose the one-token step).
+* The **host-pointer pair** in `corrupt_backend.py` (`mask-through-data`,
+  `mask-not-input`) stayed inert on lavapipe too, although lavapipe reports
+  `uma: 0`. The likely reason is not the device: `ggml_backend_sched` allocates
+  graph inputs in the CPU backend's buffer and copies them across itself, so a
+  write through `->data` lands in host memory on every backend. The source
+  rule in `ci.yml` remains the guard. (The harness needs a compiler, so it does
+  not run on the QDC device.)
+* The OpenCL backend has **never executed a graph anywhere** in this project.
+  At the pinned ggml it accepts only Adreno and Intel GPUs (`unsupported GPU`
+  for everything else, measured on Mesa rusticl in step 17), so the X Elite
+  session is its first run.
 
----
+## What changed from the old version of this page
 
-## Step 3 — the rest of the build
-
-```powershell
-cmake --build build-arm64 -j
-```
-
-Kernels are embedded by default, so the binaries are self-contained: no `.cl`
-files to ship alongside them.
-
----
-
-## Step 4 — a fixture, and why you do NOT need the real model yet
-
-**The single most valuable run on a new backend needs no weights at all.**
-`nllb-test-cache` compares two C++ paths — the KV-cached decoder against the
-un-cached one — so the weights cancel and a random model with the right shape
-is a complete test. Its `full = exact` is the trap-15 assertion (the cache
-write still precedes its read, through whatever node reordering the backend
-does) and the trap-16 one (bit-identity at equal sequence length, on a GPU).
-
-That means a **33 MB** file instead of a 1.24 GB upload:
-
-```powershell
-pip install numpy gguf
-python tests\make_shape_model.py models\shape-small-f16.gguf --d-model 256 `
-    --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 `
-    --n-ctx 64 --outtype f16
-python tests\make_shape_ref.py ref-shape\ --vocab 4000 --n-ctx 64 `
-    --max-new 24 --lengths 6 12 24 40
-```
-
-Save the real `nllb-600M-f16.gguf` for a second session, once the plumbing is
-known good.
-
----
-
-## Step 5 — the zip
-
-```
-nllb-xelite.zip
-├─ ocl-probe.exe
-├─ nllb-cli.exe
-├─ nllb-test-cache.exe
-├─ nllb-test-precision.exe
-├─ nllb-dump-states.exe
-├─ models\shape-small-f16.gguf
-├─ ref-shape\...
-└─ run.ps1
-```
-
-`run.ps1` — script it, because the device is wiped each time and you do not
-want to retype this into a mirrored screen:
-
-```powershell
-$ErrorActionPreference = "Continue"
-Start-Transcript -Path "$PSScriptRoot\qdc-log.txt"
-
-Write-Host "=== 1. will Adreno X85 work at all? ==="
-& "$PSScriptRoot\ocl-probe.exe"
-Write-Host "probe exit code (= usable devices): $LASTEXITCODE"
-
-Write-Host "`n=== 2. what does the backend registry see? ==="
-& "$PSScriptRoot\nllb-cli.exe" --list-backends
-
-Write-Host "`n=== 3. THE GATE: cached vs un-cached, on OpenCL ==="
-$env:NLLB_ARENA_TRACE = "1"
-$env:NLLB_BACKEND     = "opencl"
-& "$PSScriptRoot\nllb-test-cache.exe" "$PSScriptRoot\models\shape-small-f16.gguf" "$PSScriptRoot\ref-shape\" -t 4
-
-Write-Host "`n=== 4. CPU vs OpenCL: exact ids and the margin audit ==="
-Remove-Item Env:\NLLB_BACKEND
-& "$PSScriptRoot\nllb-test-precision.exe" `
-    "$PSScriptRoot\models\shape-small-f16.gguf" "$PSScriptRoot\models\shape-small-f16.gguf" `
-    "$PSScriptRoot\ref-shape\" -t 4 --backend cpu:opencl
-
-Write-Host "`n=== 5. a CPU dump, to diff against the Mac later ==="
-& "$PSScriptRoot\nllb-dump-states.exe" "$PSScriptRoot\models\shape-small-f16.gguf" `
-    "$PSScriptRoot\ref-shape\" "$PSScriptRoot\xelite-cpu.bin" -t 4
-
-Stop-Transcript
-```
-
-Upload it at the **Test Configuration** step (`.zip` is an accepted Compute
-package format), or `scp` it once the session is up if you configured SSH.
-
----
-
-## Step 6 — what to read in the output, in order
-
-**1. The probe.** `VERDICT: USABLE` and you are in business. Anything else and
-stop reading — a driver decides this, not the repo. Expect Adreno X85 to pass,
-since llama.cpp verifies against exactly this GPU.
-
-**2. `--list-backends`** must show a `GPUOpenCL` line. Read the `ggml_opencl:`
-lines on **stderr** above it — a dropped device explains itself there and
-nowhere else.
-
-**3. `splits 1`** in the arena trace on the cached step. More than one means an
-op fell back to the CPU with copies around it. Worth watching here: OpenCL
-*has* a `diag_mask_inf` kernel where Metal does not, so this may come for free
-where Metal had to be worked at. That is a prediction, not a result.
-
-**4. `full = exact`, 0 differing floats.** This is the one that matters. It
-says the KV write still precedes its read through the backend's own graph
-reordering (trap 15), and that bit-identity at equal sequence length holds on a
-GPU (trap 16). Metal passed both; nothing guarantees the next backend does.
-
-**5. `[arena]` bit-identical** — nothing in the graph reads memory it did not
-write, under gallocr, on a device.
-
-**6. Exact ids at `cpu:opencl`.** Expect trap 48 to reappear with different
-numbers: a backend's precision is a property of the **kernel it picks**, not of
-the tensor types. Metal silently runs matmuls with more than 8 columns in half.
-If the divergence figures split by sequence length, that is the same effect.
-
----
-
-## The row worth going out of your way for
-
-`tests/corrupt_backend.py` has two mutations, `mask-through-data` and
-`mask-not-input`, marked `report` rather than `fire`. They write a graph input
-through `->data` instead of through the backend, and they are **invisible on
-every machine this project has ever run on** — the CPU's buffers are host
-memory and Apple's Metal buffers are shared, so both hide the bug.
-
-OpenCL reports `buffer_from_host_ptr = false`. **An Adreno is the first real
-candidate that can see this class.**
-
-The harness compiles its mutations, so it cannot run on the device. The
-adaptation is to **cross-compile the mutants on the G531 and ship them in the
-zip**: run `corrupt_backend.py` locally to generate the mutated sources, build
-each into its own `.exe` for Arm64, and have `run.ps1` execute all seven and
-diff their output against the baseline. If those two fire, promote them to
-`fire` in the matrix and name the backend the assertion rests on. If they stay
-inert, check whether the Adreno driver is mapping host memory anyway before
-concluding the code is clean.
-
----
-
-## Things that will go red, and are not bugs
-
-* **`nllb-test-mmap`** fails, twice over: Windows has no mmap in this codebase
-  (`NLLB_HAVE_MMAP` is 0 in the `_WIN32` branch) *and* OpenCL cannot wrap host
-  memory, so the loader unmaps on purpose. That gate's claim lives on the CPU,
-  on macOS or Linux.
-* **`--backend metal`** fails. Correct — a named backend never silently falls
-  back; only `auto` does.
-* **`nllb-test-decoder`** against an f16 file fails. Trap 19, unrelated: its
-  tolerances *are* the f32 noise floor.
-* **`verify_translation.py` and `corrupt_backend.py`** need Python and a
-  compiler, so they do not run on the device as-is.
-
-## One thing to verify that nobody has
-
-The toolchain file passes **`-ffp-model=fast`**, inherited from llama.cpp. That
-is a change of float semantics, and every number in this project's calibration
-ladder was measured without it. `nllb-dump-states --diff` is the instrument:
-build twice, once with the flag and once without, and diff. If it is not
-IDENTICAL, drop the flag rather than explain the difference away. Step 5 of
-`run.ps1` dumps the Arm64 CPU path so you have one side of that comparison
-without spending extra session minutes.
+* **Step 1b (MSVC `-A ARM64`) was wrong** — ggml refuses MSVC on Arm at
+  configure time. Clang is required.
+* The clang toolchain file's **`-ffp-model=fast`** is not used by the new build.
+  `cmake/arm64-windows-llvm.cmake` is kept for a cross build if one is ever
+  needed, with that flag still flagged as unmeasured.
+* The x64-vs-Arm64 diff of step 4b is replaced by **runner-Arm64 vs
+  device-Arm64 with the same binary**, which isolates the one variable the old
+  comparison could not (it also changed compiler and ISA).
+* `run.ps1` is in the repo (`tools/qdc/`), was parse-checked and rehearsed end
+  to end under PowerShell 7 against Linux builds on lavapipe, and caught three
+  of its own bugs there: a `$p:` interpolation, a trailing `\` on a directory
+  argument, and a CPU-vs-GPU text comparison that passed when **both outputs
+  were empty**.

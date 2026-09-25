@@ -107,6 +107,11 @@ struct nllb_model {
     ggml_backend * backend_cpu = nullptr;   // fallback, and where n_threads applies
     std::string    backend_name;            // ggml's name for the primary, e.g. "CPU", "MTL0"
     bool           on_cpu      = true;      // backend == backend_cpu
+    // Step 17: copy the self-attention K view to a contiguous tensor before
+    // the kq matmul. ON for Vulkan only (ggml-vulkan reads a gapped batch
+    // stride wrongly - trap 50b in the handoff); NLLB_KV_CONT=0/1 overrides.
+    // The copy is exact, so this moves no float on any backend.
+    bool           kv_k_cont   = false;
     ggml_backend_buffer * weights_buf = nullptr;
     bool           weights_host_ptr   = false;   // the buffer wraps the mapping, zero-copy
 

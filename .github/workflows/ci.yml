@@ -520,3 +520,113 @@ jobs:
           grep -qi "CUDA" /tmp/be.txt \
             && echo "::warning::a CUDA device appeared - see BACKEND.md, the acceptance run may now be runnable in CI" \
             || echo "as expected: no CUDA device here, so nothing ran on it"
+
+  # ---------------------------------------------------------------------------
+  # VULKAN (step 17). The first device-backend job that RUNS GRAPHS in CI.
+  #
+  # Mesa's lavapipe is a conformant Vulkan 1.4 device that runs on the CPU.
+  # ggml-vulkan hides CPU-type devices unless GGML_VK_VISIBLE_DEVICES names
+  # them, so this job sets it. lavapipe reports uma: 0 - buffers are "device"
+  # memory to ggml - and it is what found the gapped-stride bug in ggml-vulkan's
+  # mul_mat (trap 55): the cache gate went red here before any Adreno saw it.
+  #
+  # IT CAN: build, keep the CPU path bit-identical, run the cache gate, the
+  # cross-backend precision gate and the corruption matrix ON a Vulkan device.
+  # IT CANNOT: say anything about speed, or about an Adreno's shader compiler.
+  # ---------------------------------------------------------------------------
+  vulkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GGML_VK_VISIBLE_DEVICES: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Vulkan headers, loader, glslc, SPIRV-Headers, and lavapipe
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary | grep -E "deviceName|driverName|apiVersion"
+
+      - name: Build WITHOUT Vulkan - the baseline for the diff below
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Build WITH Vulkan
+        run: |
+          cmake -B build-vk -DNLLB_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-vk -j"$(nproc)"
+          ./build-vk/bin/nllb-cli --list-backends | tee /tmp/be.txt
+          grep -q "^Vulkan0" /tmp/be.txt
+
+      - name: Small shape fixtures
+        run: |
+          pip install numpy gguf
+          for t in f32 f16; do
+            python tests/make_shape_model.py models/small-$t.gguf --d-model 256 \
+                --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64 --outtype $t
+          done
+          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 64 --max-new 24 --lengths 6 12 24 40
+
+      - name: The Vulkan flag must not move the CPU path
+        run: |
+          for t in f32 f16; do
+            ./build/bin/nllb-dump-states    models/small-$t.gguf ref-small/ /tmp/a.bin -t 2
+            ./build-vk/bin/nllb-dump-states models/small-$t.gguf ref-small/ /tmp/b.bin -t 2
+            ./build-vk/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin | tee /tmp/diff.txt
+            grep -q "^IDENTICAL" /tmp/diff.txt
+          done
+
+      # The K-view workaround is an exact copy; it must not move the CPU either.
+      - name: NLLB_KV_CONT=1 is arithmetic-free on the CPU
+        run: |
+          ./build/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/a.bin -t 2
+          NLLB_KV_CONT=1 ./build/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/c.bin -t 2
+          ./build/bin/nllb-dump-states --diff /tmp/a.bin /tmp/c.bin | grep -q "^IDENTICAL"
+
+      - name: KV ops, device vs CPU (trap 55 canary)
+        run: |
+          ./build-vk/bin/nllb-probe-kv-ops vulkan | tee /tmp/probe.txt || true
+          # did it RUN? An empty table passes every grep below.
+          grep -q "^device: Vulkan0" /tmp/probe.txt
+          test "$(grep -cE '^(cpy|mul_mat)' /tmp/probe.txt)" -eq 45
+          ! grep -E "^mul_mat\(cont\(K\)|^cpy|^mul_mat\(V view" /tmp/probe.txt | grep -q "BAD"
+          grep -q "^mul_mat(K view, q).*BAD" /tmp/probe.txt \
+            || echo "::warning::ggml-vulkan now reads gapped batch strides correctly - kv_k_cont can be retired (trap 55)"
+
+      - name: Cache gate ON VULKAN - full = exact, [arena] exact, f32 and f16
+        run: |
+          for t in f32 f16; do
+            NLLB_BACKEND=vulkan NLLB_ARENA_TRACE=1 ./build-vk/bin/nllb-test-cache models/small-$t.gguf ref-small/ -t 2 | tee /tmp/cache.txt
+            grep "cached step" /tmp/cache.txt | grep -vqE "splits +1 +compute" && { echo "a cached step split"; exit 1; } || true
+          done
+
+      - name: The workaround is load-bearing - without it the cache gate must go RED
+        run: |
+          if NLLB_KV_CONT=0 NLLB_BACKEND=vulkan ./build-vk/bin/nllb-test-cache models/small-f32.gguf ref-small/ -t 2 > /tmp/nocont.txt; then
+            echo "::warning::cache gate passes on Vulkan without kv_k_cont - ggml fixed trap 55?"
+          else
+            grep -q "FIRST BAD LAYER 1" /tmp/nocont.txt
+          fi
+
+      - name: CPU vs Vulkan - exact ids and the margin audit
+        run: |
+          for t in f32 f16; do
+            ./build-vk/bin/nllb-test-precision models/small-$t.gguf models/small-$t.gguf ref-small/ -t 2 --backend cpu:vulkan
+          done
+
+      - name: Backend corruption matrix ON VULKAN - the same table as on the CPU?
+        run: NLLB_BACKEND=vulkan python tests/corrupt_backend.py build-vk models/small-f16.gguf ref-small/ -t 2
+
+      - name: Every documented backend spelling resolves
+        run: |
+          for want in cpu auto gpu vulkan vk VK Vulkan Vulkan0; do
+            out=$(./build-vk/bin/nllb-cli -m /dev/null --backend "$want" --tgt deu_Latn x 2>&1 || true)
+            echo "$want: $out" | tail -1
+            echo "$out" | grep -q "is not available in this build" && exit 1 || true
+          done

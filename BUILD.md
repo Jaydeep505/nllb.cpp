@@ -113,12 +113,48 @@ cmake -B build-android -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON \
     -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build-android -j
 
-# Windows 11 Arm64 (Snapdragon X Elite) — OpenCL SDK from vcpkg
-cmake -B build -G Ninja -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON \
-    -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake \
-    -DCMAKE_BUILD_TYPE=Release
+# Windows 11 Arm64 (Snapdragon X Elite) — NATIVE, clang, see QDC-XELITE.md.
+# ggml refuses cl.exe on Arm ("MSVC is not supported for ARM, use clang").
+# The whole recipe, with the OpenCL loader and the Vulkan SDK, is
+# .github/workflows/xelite.yml (or tools/qdc/build-arm64.cmd by hand).
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+    -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.7-a \
+    -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
+    -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON -DCMAKE_PREFIX_PATH=<opencl-prefix>
 cmake --build build -j
 ```
+
+### Vulkan (step 17)
+
+```bash
+# Ubuntu: headers + loader, the shader compiler, SPIRV-Headers' CMake config
+sudo apt install libvulkan-dev glslc spirv-headers
+cmake -B build -DNLLB_VULKAN=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+./build/bin/nllb-cli --list-backends          # expect a Vulkan0 line
+
+# no GPU? Mesa's lavapipe is a conformant Vulkan device on the CPU. ggml-vulkan
+# HIDES CPU-type devices unless you name them:
+sudo apt install mesa-vulkan-drivers
+GGML_VK_VISIBLE_DEVICES=0 NLLB_BACKEND=vulkan ./build/bin/nllb-test-cache models/small-f16.gguf ref-small/ -t 2
+```
+
+`glslc` is a BUILD dependency: ggml compiles several hundred compute shaders to
+SPIR-V at build time (via a host tool, `vulkan-shaders-gen`, that it builds and
+runs first) and embeds them. Expect the first build to take 15-25 minutes on two
+cores and several GB of RAM per compile job — run it at `-j1` or `-j2` on a small
+machine; `-j2` alongside another heavy process was OOM-killed in step 17. On
+Windows, the LunarG SDK (set `VULKAN_SDK`) provides all three pieces, including
+a Windows-on-Arm build. At RUN time only the driver's `vulkan-1.dll` /
+`libvulkan.so.1` is needed.
+
+With both `NLLB_OPENCL` and `NLLB_VULKAN` on, ggml registers Vulkan first, so
+`auto`/`gpu` pick Vulkan; name `opencl` to get the other.
+
+On Vulkan the self-attention K view is copied to a contiguous tensor before its
+matmul (`NLLB_KV_CONT`, trap 55 in the handoff). Nothing to configure; it is
+listed here because `NLLB_KV_CONT=0` is how to check whether a ggml bump fixed
+the underlying bug.
 
 ### CUDA (step 16)
 

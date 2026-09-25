@@ -622,3 +622,80 @@ NLLB_ARENA_TRACE=1 ./build/bin/nllb-bench models/nllb-600M-f16.gguf --steps 32
   (`GGML_CUDA_FORCE_MMQ` forces the latter), so trap 48 applies again with a
   different selection rule: run f32 first as the control, and treat moving ids
   as information — `--allow-id-drift` plus chrF is the product-level answer.
+
+## Step 17: Vulkan — and the first device backend to run every gate outside Metal
+
+`-DNLLB_VULKAN=ON`. Unlike steps 14 and 16 this one **ran graphs**: Mesa's
+lavapipe (conformant Vulkan 1.4, executing on the CPU, `uma: 0` to ggml) runs
+every gate in the sandbox and in CI. ggml 0.23.0 (`7840aaba`), shape fixture
+(d_model 256, 4+4 layers, vocab 4000). `GGML_VK_VISIBLE_DEVICES=0` is required:
+ggml-vulkan hides CPU-type devices by default.
+
+| check | result |
+|---|---|
+| the flag does not move the CPU path (`nllb-dump-states --diff`) | **IDENTICAL, 912 records, f32 and f16** |
+| `NLLB_KV_CONT=1` forced on the CPU | **IDENTICAL** — the workaround is an exact copy |
+| every spelling: `vulkan vk VK Vulkan0 gpu auto` | resolve |
+| `splits` | **1 on every graph**, the un-cached decoder included (`DIAG_MASK_INF` exists on Vulkan) |
+| **cache gate, first run** | **FAIL** — `full = exact`, `step`/`chunk` wrong from layer 1 (rel 0.16), `[arena]` differs |
+| `nllb-probe-kv-ops vulkan` | `mul_mat(K view, q)` BAD at every Tn/n_past; the two cpy writes and the V matmul fine |
+| cache gate after the fix, f32 / f16 | **PASS** — `full = exact`, `[arena]` exact; step 6.9e-04 vs control 6.5e-04 (f32) |
+| `precision --backend cpu:vulkan` f32 | exact ids 96/96, tightest headroom **47.8x**, state rel 8.7e-04 |
+| `precision --backend cpu:vulkan` f16 | exact ids 96/96, tightest headroom **4.6x**, state rel 5.2e-03 |
+| `corrupt_backend.py` with `NLLB_BACKEND=vulkan` | 7/7 as expected — the CPU's matrix, unchanged |
+| with OpenCL also built in | `auto` → **Vulkan0**. Read from `ggml-backend-reg.cpp` (Vulkan registers before OpenCL); the run only confirms it weakly, since rusticl was dropped |
+
+### The bug (trap 55)
+
+ggml-vulkan's `mul_mat` treats `src0` as contiguous when dims 0 and 1 are
+(`ggml_vk_dim01_contiguous`) and then steps between the matrices of a batch by
+`ne00*ne01`, not by `nb[2]`. The self-attention K view is `[HD, n_kv, H]` over a
+`[HD, n_ctx, H]` cache, so its heads are `n_ctx` rows apart and every head after
+the first reads the wrong rows whenever `n_kv < n_ctx`. The V view is not
+dim01-contiguous (its rows are `n_ctx` apart), takes ggml's non-contiguous copy
+path, and is fine. llama.cpp does not hit this because its K view is permuted
+(`nb1 = n_embd_k`), which the same check calls non-contiguous.
+
+**Why `full = exact` stayed green:** that pass builds its cache to exactly the
+prefix length, so `n_kv == n_ctx` and there is no gap. `step` and `chunk` use
+the same cache after it has room to grow, which is every decode step of
+`nllb-cli`. A gate that passes because the fixture happens to fill a buffer
+exactly is trap 13's shape — an error that is one-sided in the configuration.
+
+**The fix** is one line in `nllb_decode_cached`: `Kv = ggml_cont(ctx, Kv)` when
+`model.kv_k_cont`, which is set for the Vulkan registry only (`NLLB_KV_CONT=0/1`
+overrides). Scoped rather than universal because Metal and the CPU read `nb[2]`
+correctly and were verified without it; the copy is exact, so turning it on
+anywhere moves no float (checked on the CPU). CI runs the gate with it forced
+OFF and requires the red, so a ggml bump that fixes the op announces itself.
+
+### Trap 48, on Vulkan
+
+An **f32** file diverges from the CPU at ~9e-4 relative on Vulkan — f16-sized
+noise — and the f16 file at ~5e-3. `nllb-probe-kv-ops` shows the same thing per
+op: exact at `Tn = 1` (mat-vec) and ~3e-4 at `Tn >= 3` for the contiguous K
+matmul. Expect the real 600M's headroom on an Adreno to look like Metal's f16
+(0.39x) rather than the CPU's, and read `[margin]` before calling a moved id a
+bug.
+
+### Not proven
+
+* Anything on a GPU. lavapipe is real Vulkan but not a real GPU: no Adreno
+  shader compiler, no discrete memory, and no speed that means anything.
+  `QDC-XELITE.md` is the device run.
+* The host-pointer pair (`mask-through-data`, `mask-not-input`) stayed inert
+  here too despite `uma: 0`. The likelier explanation now is the scheduler, not
+  the device: `ggml_backend_sched` allocates graph inputs in the CPU backend's
+  buffer and copies them across, so `->data` on an input is host memory on
+  every backend. The `ci.yml` source rule stays the guard.
+
+## Step 17b: OpenCL on the X Elite — still unrun, now packaged
+
+Nothing in this repo changed for OpenCL in step 17 beyond packaging. Two facts
+measured on the way: Mesa's rusticl has `cl_khr_fp16` but advertises subgroups
+only as the OpenCL-C feature `__opencl_c_subgroups`, not as the extension
+string ggml looks for; and at this pin **ggml-opencl accepts only Adreno and
+Intel GPUs** (`unsupported GPU … drop unsupported device`), so no software
+OpenCL can ever stand in for the device. The step-14 acceptance table is still
+blank and `run.ps1` fills it, including `nllb-probe-kv-ops opencl`, which
+answers whether OpenCL needs `NLLB_KV_CONT=1` as well.
