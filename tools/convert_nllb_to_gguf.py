@@ -1135,7 +1135,10 @@ def convert(args) -> int:
     if not args.no_tokenizer:
         v = load_vocab(md)
         if v is None:
-            print("  ! no tokenizer files found - writing weights only",
+            print("  ! no tokenizer files found - writing weights only. The "
+                  "post-write check will REFUSE this file; pass --no-tokenizer "
+                  "if that is intended (synthetic fixtures), or point at a "
+                  "snapshot with tokenizer.json (trap 32).",
                   file=sys.stderr)
         else:
             tokens, scores, toktypes, meta = v
