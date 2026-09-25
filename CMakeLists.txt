@@ -18,6 +18,7 @@
 # Device backends are OFF by default and each is one flag:
 #   -DNLLB_OPENCL=ON   step 14   (+ -DNLLB_ADRENO=ON on Snapdragon)
 #   -DNLLB_CUDA=ON     step 16   (+ -DCMAKE_CUDA_ARCHITECTURES=<sm> — pin it)
+#   -DNLLB_VULKAN=ON   step 17   (needs glslc at BUILD time; see BUILD.md)
 # Metal needs no flag: it is found on macOS and, since step 13, used.
 #
 # On macOS the configure step finds Accelerate, BLAS and Metal and links them.
@@ -145,6 +146,40 @@ if(NLLB_CUDA)
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# VULKAN (step 17).  -DNLLB_VULKAN=ON
+# ---------------------------------------------------------------------------
+# ggml's own switch is GGML_VULKAN and works unchanged. This flag exists for
+# the same reason as NLLB_OPENCL / NLLB_CUDA: to fail at CONFIGURE time, by
+# name, when the backend was not built (see the TARGET check below).
+#
+#   cmake -B build -DNLLB_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+#   cmake -B build -DNLLB_VULKAN=ON -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON ...  # X Elite
+#
+# BUILD needs: the Vulkan headers + loader import library, glslc (shaders are
+# compiled to SPIR-V at build time and embedded), and SPIRV-Headers' CMake
+# config. The LunarG SDK has all three (set VULKAN_SDK); on Ubuntu:
+#   apt install libvulkan-dev glslc spirv-headers
+# RUN needs only the driver's vulkan-1.dll / libvulkan.so.1.
+#
+# ggml builds a HOST tool (vulkan-shaders-gen) during the build and runs it,
+# and ggml refuses cl.exe on Arm outright ("MSVC is not supported for ARM, use
+# clang"). So a Windows-on-Arm build is done NATIVELY with clang (a
+# windows-11-arm runner, or Arm64 hardware), not cross-compiled with -A ARM64
+# from x64. See QDC-XELITE.md and .github/workflows/xelite.yml.
+#
+# Two runtime facts that are not visible from here, found in step 17:
+#  * ggml registers Vulkan BEFORE OpenCL (ggml-backend-reg.cpp), so with both, `auto` and
+#    `gpu` pick Vulkan0. Name `opencl` to get the other one.
+#  * ggml-vulkan HIDES CPU-type devices (Mesa lavapipe, SwiftShader) unless
+#    GGML_VK_VISIBLE_DEVICES names them. That is how CI runs graphs on it.
+option(NLLB_VULKAN "nllb: build the ggml Vulkan backend" OFF)
+
+if(NLLB_VULKAN)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    message(STATUS "nllb: Vulkan backend ON")
+endif()
+
 add_subdirectory(vendor/ggml)
 
 # ggml registers its backends at runtime and a missing one is a runtime
@@ -158,6 +193,14 @@ if(NLLB_OPENCL AND NOT TARGET ggml-opencl)
         "find_package(OpenCL REQUIRED) needs headers and an ICD loader: "
         "apt install opencl-headers ocl-icd-opencl-dev (Linux), or point "
         "-DOpenCL_INCLUDE_DIR / -DOpenCL_LIBRARY at them. See BUILD.md.")
+endif()
+
+if(NLLB_VULKAN AND NOT TARGET ggml-vulkan)
+    message(FATAL_ERROR
+        "NLLB_VULKAN=ON but ggml did not build its Vulkan backend. Its "
+        "find_package(Vulkan COMPONENTS glslc) needs the headers, the loader "
+        "library and glslc: install the LunarG SDK and set VULKAN_SDK, or on "
+        "Ubuntu `apt install libvulkan-dev glslc spirv-headers`. See BUILD.md.")
 endif()
 
 if(NLLB_CUDA AND NOT TARGET ggml-cuda)
@@ -265,6 +308,15 @@ if(NLLB_OPENCL)
     target_compile_options(ocl-probe PRIVATE ${NLLB_WARN})
     set_target_properties(ocl-probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
+
+# Step 17. The cached step's four KV-cache ops (the two cpy writes into the
+# cache views, the two mul_mats over them) one at a time, device vs CPU, at
+# Tn = 1, 3, 9. Needs no model. It is how the Vulkan cache-gate failure was
+# localised to one op, and the first thing to run on any new device backend.
+add_executable(nllb-probe-kv-ops tests/probe_kv_ops.cpp)
+target_link_libraries(nllb-probe-kv-ops PRIVATE ggml)
+target_compile_options(nllb-probe-kv-ops PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-probe-kv-ops PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_executable(nllb-test-precision tests/test_precision.cpp)
 target_link_libraries(nllb-test-precision PRIVATE nllb)

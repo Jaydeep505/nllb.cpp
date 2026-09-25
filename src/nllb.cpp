@@ -476,6 +476,23 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         }
         model.on_cpu       = model.backend == model.backend_cpu;
         model.backend_name = ggml_backend_name(model.backend);
+
+        // ggml-vulkan's mul_mat decides "contiguous" from dims 0 and 1 alone
+        // (ggml_vk_dim01_contiguous) and then steps between the matrices of
+        // a batch by ne00*ne01, ignoring nb[2]. The self-attention K view is
+        // [HD, n_kv, H] over a [HD, n_ctx, H] cache: rows contiguous, heads
+        // n_ctx rows apart. So every head after the first read the wrong rows
+        // whenever n_kv < n_ctx - measured by nllb-probe-kv-ops, and invisible
+        // to `full = exact` whenever the gate's cache was exactly full.
+        // A ggml_cont before the matmul makes the operand genuinely contiguous.
+        // Scoped to Vulkan so no verified backend changes; the env var exists
+        // to price it elsewhere and to re-test once ggml is fixed upstream.
+        {
+            const std::string reg = nllb_lower(ggml_backend_reg_name(
+                ggml_backend_dev_backend_reg(ggml_backend_get_device(model.backend))));
+            model.kv_k_cont = reg == "vulkan";
+            if (const char * e = ::getenv("NLLB_KV_CONT")) model.kv_k_cont = *e == '1';
+        }
     }
 
     // Try the mapping FIRST. gguf is ALWAYS parsed with no_alloc = true now:
@@ -1443,6 +1460,9 @@ bool nllb_decode_cached(const nllb_model & model,
 
         ggml_tensor * Kv = ggml_view_3d(ctx, kc, HD, n_kv, H,
                 kc->nb[1], kc->nb[2], 0);                           // (HD, n_kv, H)
+        // Heads sit n_ctx rows apart, so this view has a GAPPED batch stride.
+        // The CPU and Metal read nb[2]; ggml-vulkan does not (see kv_k_cont).
+        if (model.kv_k_cont) Kv = ggml_cont(ctx, Kv);
         ggml_tensor * Vv = ggml_view_3d(ctx, vc, n_kv, HD, H,
                 vc->nb[1], vc->nb[2], 0);                           // (n_kv, HD, H)
 
