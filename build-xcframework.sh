@@ -5,7 +5,7 @@
 # Modeled on whisper.cpp's script of the same name. Differences, all deliberate:
 #   * ggml lives at vendor/ggml, so its static libraries are FOUND by name
 #     under each build directory rather than hard-coded by path;
-#   * the framework exports ONE header, src/nllb-c.h. nllb.h is C++ and Swift
+#   * the framework exports ONE header, include/nllb-c.h. nllb.h is C++ and Swift
 #     cannot import it; the C facade is the whole app-facing API;
 #   * slices: iOS device, iOS simulator, macOS. visionOS/tvOS are one more
 #     cmake block each (see whisper.cpp) and nothing here has been run on them;
@@ -133,7 +133,7 @@ setup_framework_structure() {
 
     # ONE header. It is pure C (checked with -std=c99 -pedantic), so the
     # module imports into Swift with no bridging header.
-    cp src/nllb-c.h ${header_path}
+    cp include/nllb-c.h ${header_path}
 
     cat > ${module_path}module.modulemap << EOF
 framework module ${framework_name} {
