@@ -15,6 +15,7 @@ name: ios
 on:
   push:
     paths:
+      - 'include/**'
       - 'src/**'
       - 'CMakeLists.txt'
       - 'build-xcframework.sh'
@@ -38,7 +39,7 @@ jobs:
           submodules: recursive
 
       - name: nllb-c.h is pure C (it is the Swift module's only header)
-        run: clang -std=c99 -Wall -Wextra -pedantic -Werror -fsyntax-only -x c src/nllb-c.h
+        run: clang -std=c99 -Wall -Wextra -pedantic -Werror -fsyntax-only -x c include/nllb-c.h
 
       - name: build-xcframework.sh
         run: ./build-xcframework.sh

@@ -16,7 +16,7 @@ open examples/nllb.swiftui/NllbTranslate.xcodeproj
 
 | file | what |
 |---|---|
-| `src/nllb-c.h`, `src/nllb-c.cpp` | Plain-C facade: `nllb_ctx_init`, `nllb_translate`, `nllb_ctx_request_abort`, language list. Part of `libnllb`. |
+| `include/nllb-c.h`, `src/nllb-c.cpp` | Plain-C facade: `nllb_ctx_init`, `nllb_translate`, `nllb_ctx_request_abort`, language list. Part of `libnllb`. |
 | `build-xcframework.sh` | whisper.cpp's script, adapted. Slices: iOS, iOS simulator, macOS. |
 | `CMakeLists.txt` | `NLLB_BUILD_TOOLS` (default ON). OFF builds the library alone. |
 | `nllb_generate_params::on_token` | Optional per-token hook; returning false stops with `NLLB_STOP_ABORTED`. |

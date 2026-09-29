@@ -22,7 +22,7 @@ OpenCL + Vulkan is packaged by `.github/workflows/xelite.yml`; see
 `QDC-XELITE.md`.
 
 iOS: `./build-xcframework.sh` packages the library + Metal as
-`build-apple/nllb.xcframework`, with a plain-C API (`src/nllb-c.h`) so Swift
+`build-apple/nllb.xcframework`, with a plain-C API (`include/nllb-c.h`) so Swift
 can `import nllb`. `examples/nllb.swiftui` is a minimal split-screen translator
 on top of it. Built and CI-compiled, **not yet run on a device** — see `IOS.md`.
 

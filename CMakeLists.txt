@@ -223,11 +223,11 @@ else()
     set(NLLB_WARN -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# nllb-c.cpp is the plain-C facade (src/nllb-c.h) that Swift and other FFIs
+# nllb-c.cpp is the plain-C facade (include/nllb-c.h) that Swift and other FFIs
 # import; build-xcframework.sh puts only that header in the framework.
 add_library(nllb STATIC src/nllb.cpp src/nllb-vocab.cpp src/nllb-c.cpp)
 target_compile_options(nllb PRIVATE ${NLLB_WARN})
-target_include_directories(nllb PUBLIC src)
+target_include_directories(nllb PUBLIC include src)
 target_link_libraries(nllb PUBLIC ggml)
 
 # NLLB_BUILD_TOOLS=OFF builds the library alone - no CLI, no gates, no tools.
