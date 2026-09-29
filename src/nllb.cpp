@@ -1750,6 +1750,14 @@ bool nllb_generate(const nllb_model & model,
         if (s.token == eos) {
             out.stop    = NLLB_STOP_EOS;
             out.hit_eos = true;
+            if (params.on_token) params.on_token(s.token, params.on_token_user);
+            break;
+        }
+
+        // After the eos check, so a finished sequence always reports EOS even
+        // when the hook would also have asked to stop.
+        if (params.on_token && !params.on_token(s.token, params.on_token_user)) {
+            out.stop = NLLB_STOP_ABORTED;
             break;
         }
     }

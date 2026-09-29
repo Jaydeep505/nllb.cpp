@@ -223,10 +223,19 @@ else()
     set(NLLB_WARN -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-add_library(nllb STATIC src/nllb.cpp src/nllb-vocab.cpp)
+# nllb-c.cpp is the plain-C facade (src/nllb-c.h) that Swift and other FFIs
+# import; build-xcframework.sh puts only that header in the framework.
+add_library(nllb STATIC src/nllb.cpp src/nllb-vocab.cpp src/nllb-c.cpp)
 target_compile_options(nllb PRIVATE ${NLLB_WARN})
 target_include_directories(nllb PUBLIC src)
 target_link_libraries(nllb PUBLIC ggml)
+
+# NLLB_BUILD_TOOLS=OFF builds the library alone - no CLI, no gates, no tools.
+# That is what build-xcframework.sh passes: an iOS target has no use for a
+# command-line binary and the Xcode generator would try to bundle each one.
+option(NLLB_BUILD_TOOLS "nllb: build nllb-cli, the gates and the tools" ON)
+
+if(NLLB_BUILD_TOOLS)
 
 # The CLI. This is the only binary here that is a *product* rather than a
 # gate: text in, translation out, no goldens and no reference dumps. It is
@@ -331,3 +340,5 @@ add_executable(nllb-dump-states tests/dump_states.cpp)
 target_link_libraries(nllb-dump-states PRIVATE nllb)
 target_compile_options(nllb-dump-states PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-dump-states PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+endif() # NLLB_BUILD_TOOLS

@@ -1,0 +1,65 @@
+# iOS: build nllb.xcframework with build-xcframework.sh, then compile the
+# SwiftUI example against it for the simulator. No model, no signing.
+#
+# What this protects: the framework's link line (a missing libggml-metal.a
+# links and then silently has no GPU - the script refuses that by name), the
+# module map (nllb-c.h must import into Swift as `import nllb`), and the app's
+# Swift against the C API it calls.
+#
+# What it CANNOT protect: anything at runtime. No graph runs here, and the
+# simulator is not a Metal target this project makes claims about. The
+# acceptance run is on a device - see examples/nllb.swiftui/README.md.
+
+name: ios
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'build-xcframework.sh'
+      - 'examples/nllb.swiftui/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xcframework:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: nllb-c.h is pure C (it is the Swift module's only header)
+        run: clang -std=c99 -Wall -Wextra -pedantic -Werror -fsyntax-only -x c src/nllb-c.h
+
+      - name: build-xcframework.sh
+        run: ./build-xcframework.sh
+
+      - name: framework exports the C API
+        run: |
+          set -e
+          FW=build-apple/nllb.xcframework/ios-arm64/nllb.framework
+          test -f "$FW/Headers/nllb-c.h"
+          test -f "$FW/Modules/module.modulemap"
+          nm -gU "$FW/nllb" | grep -q '_nllb_translate$'
+          nm -gU "$FW/nllb" | grep -q '_nllb_ctx_init$'
+          # Metal must be IN the binary, or "auto" quietly means CPU on device.
+          nm -gU "$FW/nllb" | grep -q '_ggml_backend_metal_reg'
+          echo "ok"
+
+      - name: build the SwiftUI example for the simulator
+        run: |
+          xcodebuild build \
+            -project examples/nllb.swiftui/NllbTranslate.xcodeproj \
+            -scheme NllbTranslate \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO

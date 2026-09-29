@@ -31,3 +31,8 @@ output.txt
 output-*.txt
 log.txt
 log-*.txt
+build-apple/
+build-ios-sim/
+build-ios-device/
+build-macos/
+xcf.log
