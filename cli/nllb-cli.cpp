@@ -171,6 +171,7 @@ bool translate_one(const nllb_model & model, const nllb_vocab & vocab,
 
         const char * stop = gen.stop == NLLB_STOP_EOS     ? "eos"
                           : gen.stop == NLLB_STOP_CONTEXT ? "ctx (ran out of n_ctx)"
+                          : gen.stop == NLLB_STOP_ABORTED ? "aborted"
                                                           : "cap (max_new_tokens)";
         const size_t n_new = gen.ids.empty() ? 0 : gen.ids.size() - 1;
         std::fprintf(stderr,

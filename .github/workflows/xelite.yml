@@ -1,0 +1,198 @@
+# Step 17: the Snapdragon X Elite package - OpenCL + Vulkan, built NATIVELY on
+# Windows on Arm, tested on the CI runner's CPU, shipped as one zip for a
+# Qualcomm Device Cloud session.
+#
+#   Actions tab -> "xelite" -> Run workflow        (or push a tag xelite-*)
+#   download the artifact nllb-xelite.zip, upload it to the QDC session,
+#   unzip, and:  powershell -ExecutionPolicy Bypass -File .\run.ps1
+#
+# WHY NATIVE AND NOT CROSS-COMPILED FROM THE G531 (x64). Two reasons, both
+# found while writing this, and both make the older QDC-XELITE.md recipe wrong:
+#
+#  1. ggml REFUSES MSVC on Arm:  src/ggml-cpu/CMakeLists.txt has
+#     `message(FATAL_ERROR "MSVC is not supported for ARM, use clang")`. So
+#     `cmake -A ARM64` with the default cl.exe does not configure at all. The
+#     compiler has to be clang (clang or clang-cl), with MSVC's Arm64 libs.
+#  2. ggml-vulkan compiles and RUNS a host tool (vulkan-shaders-gen) during the
+#     build. Cross-compiling means building that tool for the host with a
+#     second toolchain; on a native Arm64 runner the host IS the target and the
+#     problem does not exist.
+#
+# windows-11-arm runners are free for public repos and available to private
+# ones since Jan 2026 (GitHub changelog 2026-01-29). The image has VS 2022
+# with the ARM64 tools, LLVM 22, CMake, Ninja and Python.
+#
+# THE THIRD TRAP, and the reason GGML_NATIVE is OFF: the runner is an Azure
+# Cobalt 100 (Neoverse N2, Armv9 WITH SVE2). The X Elite's Oryon cores are
+# Armv8.7 WITHOUT SVE. A -mcpu=native build on the runner would emit SVE and die
+# on the device with an illegal instruction - in the CPU backend, i.e. in the
+# reference every GPU number is compared against. One fixed -march for both.
+name: xelite
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [ 'xelite-*' ]
+
+env:
+  # The ggml commit every step-13..17 number was measured on. A Windows
+  # checkout once reported ggml 0.20.2 / 8c63e709 - a bump made on the Mac was
+  # never committed - and a zip built on the wrong pin would make the QDC
+  # session measure the bump. Both jobs refuse to build anything else.
+  GGML_PIN: 7840aab
+  # llama.cpp's choice for the X Elite; supported by the runner too, so the
+  # SAME binary is the one tested here and on the device.
+  ARM_ARCH: armv8.7-a
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Fixtures and an x64 Linux CPU dump, on a runner that has Python wheels for
+  # everything. The fixtures are random weights with a small NLLB geometry: the
+  # cache gate compares two C++ paths, so the weights cancel and 33 MB is a
+  # complete test of a backend (see QDC-XELITE.md, step 4).
+  # -------------------------------------------------------------------------
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - name: ggml submodule is at the pinned commit
+        shell: bash
+        run: |
+          have=$(git -C vendor/ggml rev-parse --short=7 HEAD)
+          echo "vendor/ggml at $have, pin $GGML_PIN"
+          test "$have" = "$GGML_PIN" || { echo "::error::vendor/ggml is $have, not $GGML_PIN. git -C vendor/ggml checkout $GGML_PIN && git add vendor/ggml && git commit"; exit 1; }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install numpy gguf
+      - name: Shape fixtures (f16 and f32) + structural ref
+        run: |
+          for t in f16 f32; do
+            python tests/make_shape_model.py models/shape-small-$t.gguf --d-model 256 \
+              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 \
+              --n-ctx 64 --outtype $t
+          done
+          python tests/make_shape_ref.py ref-shape/ --vocab 4000 --n-ctx 64 \
+              --max-new 24 --lengths 6 12 24 40
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: |
+            models/shape-small-f16.gguf
+            models/shape-small-f32.gguf
+            ref-shape/
+
+  # -------------------------------------------------------------------------
+  windows-arm64:
+    needs: fixtures
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: actions/download-artifact@v4
+        with: { name: fixtures, path: . }
+      - name: ggml submodule is at the pinned commit
+        shell: bash
+        run: |
+          have=$(git -C vendor/ggml rev-parse --short=7 HEAD)
+          echo "vendor/ggml at $have, pin $GGML_PIN"
+          test "$have" = "$GGML_PIN" || { echo "::error::vendor/ggml is $have, not $GGML_PIN. git -C vendor/ggml checkout $GGML_PIN && git add vendor/ggml && git commit"; exit 1; }
+
+      # The LunarG SDK has a Windows-on-Arm build ("warm"): arm64 glslc, the
+      # arm64 vulkan-1.lib import library and SPIRV-Headers' CMake config.
+      # Only the BUILD needs it - on the device vulkan-1.dll comes from the
+      # Adreno driver.
+      - name: Vulkan SDK (Windows on Arm)
+        shell: pwsh
+        run: |
+          $ver = (Invoke-RestMethod https://vulkan.lunarg.com/sdk/latest/warm.txt).Trim()
+          Write-Host "Vulkan SDK $ver"
+          curl.exe -sSL -o "$env:RUNNER_TEMP\vksdk.exe" "https://sdk.lunarg.com/sdk/download/$ver/warm/vulkan_sdk.exe"
+          & "$env:RUNNER_TEMP\vksdk.exe" --root "C:\VulkanSDK\$ver" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\bin"
+          "vulkan_sdk=$ver" | Out-File -Append "$env:RUNNER_TEMP\build-info.txt"
+
+      # Khronos headers + ICD loader from source, native Arm64 (llama.cpp's
+      # recipe, minus the cross-compile). The loader DLL is shipped next to
+      # the binaries: it finds the Adreno ICD through the registry, and a
+      # binary linked against OpenCL.lib must not depend on the device image
+      # happening to carry an OpenCL.dll.
+      - name: OpenCL headers + ICD loader (Arm64)
+        shell: pwsh
+        run: |
+          $pfx = "$env:RUNNER_TEMP\opencl"
+          git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers
+          cmake -S OpenCL-Headers -B OpenCL-Headers/build -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$pfx"
+          cmake --build OpenCL-Headers/build --target install
+          git clone --depth 1 https://github.com/KhronosGroup/OpenCL-ICD-Loader
+          cmake -S OpenCL-ICD-Loader -B OpenCL-ICD-Loader/build -DBUILD_TESTING=OFF `
+                -DCMAKE_PREFIX_PATH="$pfx" -DCMAKE_INSTALL_PREFIX="$pfx"
+          cmake --build OpenCL-ICD-Loader/build --target install --config Release
+
+      # THREE builds of one commit: cpu (the reference, and the one that
+      # starts whatever DLLs are missing), opencl, vulkan. Same flags apart
+      # from the one backend switch. Static CRT so nothing needs the VC++
+      # redistributable on a freshly wiped QDC image.
+      - name: Build cpu / opencl / vulkan (clang, Ninja, native Arm64)
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          where clang
+          clang --version
+          set COMMON=-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=%ARM_ARCH% -DGGML_OPENMP=OFF
+          cmake -B build-cpu %COMMON% || exit /b 1
+          cmake --build build-cpu -j || exit /b 1
+          cmake -B build-opencl %COMMON% -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON -DCMAKE_PREFIX_PATH=%RUNNER_TEMP%\opencl || exit /b 1
+          cmake --build build-opencl -j || exit /b 1
+          cmake -B build-vulkan %COMMON% -DNLLB_VULKAN=ON || exit /b 1
+          cmake --build build-vulkan -j || exit /b 1
+
+      # What CAN be proven on a GPU-less runner, and it is not nothing:
+      # the binaries start, the CPU gate passes, and neither backend flag moves
+      # the CPU path (the step-14 assertion, now on Arm64 Windows).
+      - name: CPU gates on the runner, and the flags must not move the CPU path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($b in "cpu","opencl","vulkan") { & "build-$b\bin\nllb-cli.exe" --list-backends }
+          & build-cpu\bin\nllb-test-cache.exe models\shape-small-f16.gguf ref-shape\ -t 4
+          if ($LASTEXITCODE) { exit 1 }
+          New-Item -ItemType Directory -Force baseline | Out-Null
+          foreach ($p in "f16","f32") {
+            & build-cpu\bin\nllb-dump-states.exe models\shape-small-$p.gguf ref-shape\ baseline\runner-cpu-$p.bin -t 4
+            foreach ($b in "opencl","vulkan") {
+              & "build-$b\bin\nllb-dump-states.exe" models\shape-small-$p.gguf ref-shape\ "$env:RUNNER_TEMP\$b-$p.bin" -t 4 --backend cpu
+              & build-cpu\bin\nllb-dump-states.exe --diff baseline\runner-cpu-$p.bin "$env:RUNNER_TEMP\$b-$p.bin" | Tee-Object -Variable d
+              if (-not ($d -match "^IDENTICAL")) { Write-Error "$b build moved the CPU path at $p" }
+            }
+          }
+
+      - name: Package nllb-xelite.zip
+        shell: pwsh
+        run: |
+          $pkg = "nllb-xelite"
+          $exes = "nllb-cli","nllb-test-cache","nllb-test-precision","nllb-dump-states","nllb-bench","nllb-probe-kv-ops"
+          foreach ($b in "cpu","opencl","vulkan") {
+            New-Item -ItemType Directory -Force "$pkg\$b" | Out-Null
+            foreach ($e in $exes) { Copy-Item "build-$b\bin\$e.exe" "$pkg\$b\" }
+          }
+          Copy-Item build-opencl\bin\ocl-probe.exe "$pkg\opencl\"
+          Copy-Item "$env:RUNNER_TEMP\opencl\bin\OpenCL.dll" "$pkg\opencl\"
+          Copy-Item -Recurse models, ref-shape, baseline "$pkg\"
+          Copy-Item tools\qdc\run.ps1, tools\qdc\sentences.txt, QDC-XELITE.md "$pkg\"
+          $info = @(
+            "commit=$env:GITHUB_SHA",
+            "ggml=$(git -C vendor/ggml describe --tags --always)",
+            "arch=$env:ARM_ARCH  GGML_NATIVE=OFF  compiler=clang (msvc abi)  crt=static",
+            "runner=$env:RUNNER_NAME ($env:PROCESSOR_IDENTIFIER)"
+          ) + (Get-Content "$env:RUNNER_TEMP\build-info.txt")
+          $info | Set-Content "$pkg\BUILD-INFO.txt"
+          Get-Content "$pkg\BUILD-INFO.txt"
+          Compress-Archive -Path "$pkg\*" -DestinationPath nllb-xelite.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nllb-xelite
+          path: nllb-xelite.zip

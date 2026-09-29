@@ -475,6 +475,16 @@ struct nllb_generate_params {
     // against, and a default that quietly changed the arithmetic would make
     // every gate stop testing what its name says.
     int32_t kv_type        = NLLB_KV_F32;
+
+    // Optional per-token hook, for a UI that streams the translation and can
+    // cancel it (examples/nllb.swiftui). Called once per EMITTED token -
+    // including the forced target code at step 0 and the final eos - AFTER the
+    // token has been appended to out.ids. Return false to stop: generation
+    // ends with NLLB_STOP_ABORTED and nllb_generate still returns true, with
+    // the prefix produced so far. nullptr (the default) changes nothing, so
+    // no gate sees a different code path unless it asks for one.
+    bool  (*on_token)(int32_t token, void * user) = nullptr;
+    void *  on_token_user  = nullptr;
 };
 
 // Per-step trace. `margin` is top1 - top2 over the vocabulary *before* forcing:
@@ -496,6 +506,7 @@ enum nllb_stop_reason {
     NLLB_STOP_EOS     = 0,
     NLLB_STOP_MAX_NEW = 1,
     NLLB_STOP_CONTEXT = 2,   // ran out of n_ctx before eos
+    NLLB_STOP_ABORTED = 3,   // params.on_token returned false
 };
 
 struct nllb_generate_result {

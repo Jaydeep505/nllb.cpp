@@ -21,6 +21,11 @@ CI-guarded with **no graph run on them yet**. The Snapdragon X Elite run of
 OpenCL + Vulkan is packaged by `.github/workflows/xelite.yml`; see
 `QDC-XELITE.md`.
 
+iOS: `./build-xcframework.sh` packages the library + Metal as
+`build-apple/nllb.xcframework`, with a plain-C API (`src/nllb-c.h`) so Swift
+can `import nllb`. `examples/nllb.swiftui` is a minimal split-screen translator
+on top of it. Built and CI-compiled, **not yet run on a device** — see `IOS.md`.
+
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release                                    # CPU, + Metal on macOS
 cmake -B build -DNLLB_CUDA=ON   -DCMAKE_CUDA_ARCHITECTURES=75 ...            # NVIDIA

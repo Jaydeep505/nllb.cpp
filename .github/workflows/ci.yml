@@ -57,9 +57,12 @@ jobs:
           python tests/make_tiny_model.py models/tiny-nllb
           python tests/make_tiny_model.py models/deep-nllb \
               --layers 12 --heads 16 --d-model 256 --ffn 512 --vocab 2000 --untied
-          python tools/convert_nllb_to_gguf.py models/tiny-nllb \
+          # --no-tokenizer: the tiny fixtures are random weights with no
+          # tokenizer files, and the converter's post-write check (trap 32)
+          # rightly refuses a file without one unless told it is on purpose.
+          python tools/convert_nllb_to_gguf.py models/tiny-nllb --no-tokenizer \
               --outfile models/tiny-f32.gguf --outtype f32
-          python tools/convert_nllb_to_gguf.py models/deep-nllb \
+          python tools/convert_nllb_to_gguf.py models/deep-nllb --no-tokenizer \
               --outfile models/deep-f32.gguf --outtype f32
 
       - name: Dump goldens (4 fixtures)
@@ -123,8 +126,8 @@ jobs:
 
       - name: f16 - build the half-precision fixtures
         run: |
-          python tools/convert_nllb_to_gguf.py models/tiny-nllb --outfile models/tiny-f16.gguf --outtype f16
-          python tools/convert_nllb_to_gguf.py models/deep-nllb --outfile models/deep-f16.gguf --outtype f16
+          python tools/convert_nllb_to_gguf.py models/tiny-nllb --no-tokenizer --outfile models/tiny-f16.gguf --outtype f16
+          python tools/convert_nllb_to_gguf.py models/deep-nllb --no-tokenizer --outfile models/deep-f16.gguf --outtype f16
 
       - name: f16 gate - same ids as f32, and every decision provably safe
         # The assertion is EXACT ID EQUALITY between the two precisions. The

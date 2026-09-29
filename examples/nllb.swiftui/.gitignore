@@ -1,0 +1,4 @@
+# model files are 0.66-2.5 GB; never commit them
+*.gguf
+xcuserdata/
+*.xcuserstate
