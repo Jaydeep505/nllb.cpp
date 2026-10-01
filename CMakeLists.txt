@@ -180,6 +180,29 @@ if(NLLB_VULKAN)
     message(STATUS "nllb: Vulkan backend ON")
 endif()
 
+# Local ggml fixes pending upstream (patches/ggml-*.patch). Each is applied once:
+# if it already reverse-applies, it is in the tree (applied earlier, or merged
+# upstream after a pin bump), and is skipped.
+option(NLLB_GGML_PATCHES "nllb: apply patches/ggml-*.patch to vendor/ggml" ON)
+if(NLLB_GGML_PATCHES)
+    find_package(Git REQUIRED)
+    file(GLOB NLLB_GGML_PATCH_FILES "${CMAKE_CURRENT_SOURCE_DIR}/patches/ggml-*.patch")
+    foreach(p ${NLLB_GGML_PATCH_FILES})
+        execute_process(COMMAND ${GIT_EXECUTABLE} apply --reverse --check "${p}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml"
+            RESULT_VARIABLE nllb_already OUTPUT_QUIET ERROR_QUIET)
+        if(NOT nllb_already EQUAL 0)
+            execute_process(COMMAND ${GIT_EXECUTABLE} apply "${p}"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml"
+                RESULT_VARIABLE nllb_rc)
+            if(NOT nllb_rc EQUAL 0)
+                message(FATAL_ERROR "nllb: ${p} does not apply to vendor/ggml - the pin moved; refresh or drop the patch")
+            endif()
+            message(STATUS "nllb: applied ${p}")
+        endif()
+    endforeach()
+endif()
+
 add_subdirectory(vendor/ggml)
 
 # ggml registers its backends at runtime and a missing one is a runtime
