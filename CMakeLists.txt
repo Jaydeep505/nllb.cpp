@@ -269,6 +269,15 @@ target_link_libraries(nllb-cli PRIVATE nllb)
 target_compile_options(nllb-cli PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# The HTTP server (examples/server). A product binary like nllb-cli, so it is
+# built with the tools; NLLB_BUILD_SERVER=OFF skips it (it pulls in two large
+# single headers and a thread dependency the gates do not need).
+option(NLLB_BUILD_SERVER "nllb: build examples/server (nllb-server)" ON)
+if(NLLB_BUILD_SERVER)
+    find_package(Threads REQUIRED)
+    add_subdirectory(examples/server)
+endif()
+
 add_executable(nllb-test tests/test_encoder.cpp)
 target_link_libraries(nllb-test PRIVATE nllb)
 target_compile_options(nllb-test PRIVATE ${NLLB_WARN})
