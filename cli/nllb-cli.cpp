@@ -28,12 +28,19 @@
 // to stderr. That is what lets the gate compare stdout byte for byte and lets
 // a user pipe the output somewhere without filtering it.
 //
-// SCOPE. Deliberately no batch mode. Each input line is an independent call:
-// its own encoder pass and its own fresh KV cache. Reusing a cache across
-// sentences would mean nllb_kv_cache_reset, which rewinds only the
-// self-attention half and is correct exactly when the source is unchanged -
-// something nothing in the repo enforces or tests yet. Amortising the model
-// load across lines is free; amortising the cache is not, so it is not done.
+// SCOPE. By default each input line is an independent call: its own encoder
+// pass and its own fresh KV cache. Reusing a cache across sentences would mean
+// nllb_kv_cache_reset, which rewinds only the self-attention half and is
+// correct exactly when the source is unchanged - nothing enforces that, so it
+// is not done.
+//
+// --batch N (stdin only, opt-in) groups up to N lines - sorted by length,
+// budgeted by --batch-tokens padded source tokens - through nllb_generate_batch,
+// then prints them in INPUT order. Same one-line-per-line contract; the output
+// is just no longer streamed. It never rewinds a cache either: a batched cache
+// is built for its group and thrown away. OFF by default so the [stdin] pass of
+// tests/verify_translation.py keeps testing what it always tested; run that gate
+// with --batch N to make the batched claim (byte-identical output).
 
 #include "nllb.h"
 #include "nllb-vocab.h"
@@ -101,6 +108,12 @@ void usage(const char * argv0) {
         "                        near-zero load whose cost reappears as page\n"
         "                        faults during the first tokens, against one\n"
         "                        sequential read up front. MEASURE, do not assume.\n"
+        "      --batch N         stdin only: translate up to N lines together (one\n"
+        "                        batched decoder step for all of them). Lines are\n"
+        "                        grouped by length and printed in INPUT order once\n"
+        "                        their group finishes. Default 1 = off.\n"
+        "      --batch-tokens N  cap a group's PADDED source tokens (default 2048)\n"
+        "      --no-batch        the default, spelled out\n"
         "      --no-cache        re-decode the whole prefix every step. Same ids,\n"
         "                        O(n^2) instead of O(n) - see CACHE.md.\n"
         "      --kv-f16          store the cached K and V at f16 instead of f32.\n"
@@ -184,6 +197,91 @@ bool translate_one(const nllb_model & model, const nllb_vocab & vocab,
     return true;
 }
 
+
+// --batch N: read every line, plan groups by length, one nllb_generate_batch
+// per group, print in INPUT order. -v prints the same "src ids" / "out ids" /
+// "stop" lines as translate_one, per line and in input order, so
+// tests/verify_translation.py's bisect reads them unchanged.
+int translate_stdin_batched(const nllb_model & model, const nllb_vocab & vocab,
+                            const std::string & src_lang, int32_t tgt_id,
+                            const nllb_generate_params & base, int n_threads,
+                            int batch, int batch_tokens, bool verbose) {
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(line);
+    }
+    const size_t n = lines.size();
+    std::vector<std::vector<int32_t>> src(n);
+    std::vector<std::string> out(n), errs(n);
+    std::vector<nllb_generate_result> gen(n);
+    std::vector<char> ok(n, 0);
+
+    // A line that fails to tokenize still gets its blank output line, in its
+    // place. The line correspondence is the whole contract of stdin mode.
+    std::vector<int32_t> idx, lens;
+    for (size_t i = 0; i < n; ++i) {
+        std::string err;
+        if (!nllb_vocab_encode(vocab, lines[i], src_lang, src[i], err)) { errs[i] = err; continue; }
+        idx.push_back((int32_t) i);
+        lens.push_back((int32_t) src[i].size());
+    }
+
+    const double t0 = now_ms();
+    const auto groups = nllb_plan_batches(lens, batch, batch_tokens);
+    long long slots = 0, kept = 0;
+    for (const auto & g : groups) {
+        std::vector<std::vector<int32_t>> srcs;
+        for (int32_t k : g) srcs.push_back(src[idx[k]]);
+        nllb_generate_params gp = base;
+        gp.forced_bos_id = tgt_id;
+        nllb_generate_batch_result r;
+        std::string err;
+        if (!nllb_generate_batch(model, srcs, {}, gp, n_threads, r, err)) {
+            for (int32_t k : g) errs[idx[k]] = err;   // the whole group fails together
+            continue;
+        }
+        slots += r.token_slots;
+        kept  += r.tokens_kept;
+        for (size_t j = 0; j < g.size(); ++j) {
+            const size_t i = (size_t) idx[g[j]];
+            gen[i] = r.seq[j];
+            out[i] = nllb_vocab_decode(vocab, r.seq[j].ids, /*skip_special=*/true);
+            ok[i]  = 1;
+        }
+    }
+    const double t1 = now_ms();
+
+    int n_fail = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (verbose && ok[i]) {
+            std::fprintf(stderr, "src ids (%zu):", src[i].size());
+            for (int32_t id : src[i]) std::fprintf(stderr, " %d", id);
+            std::fprintf(stderr, "\nout ids (%zu):", gen[i].ids.size());
+            for (int32_t id : gen[i].ids) std::fprintf(stderr, " %d", id);
+            const char * stop = gen[i].stop == NLLB_STOP_EOS     ? "eos"
+                              : gen[i].stop == NLLB_STOP_CONTEXT ? "ctx (ran out of n_ctx)"
+                              : gen[i].stop == NLLB_STOP_ABORTED ? "aborted"
+                                                                 : "cap (max_new_tokens)";
+            std::fprintf(stderr, "\nstop: %s | %zu new tokens | cache on (batched)\n",
+                         stop, gen[i].ids.empty() ? (size_t) 0 : gen[i].ids.size() - 1);
+        }
+        if (!ok[i]) {
+            std::fprintf(stderr, "line %zu: %s\n", i + 1, errs[i].c_str());
+            ++n_fail;
+        }
+        std::printf("%s\n", ok[i] ? out[i].c_str() : "");
+    }
+    std::fflush(stdout);
+    if (verbose) {
+        std::fprintf(stderr, "%zu lines in %zu groups (batch %d, %d padded tokens), %d failed | "
+                             "generate %.1f ms | decoder slots %lld, kept %lld\n",
+                     n, groups.size(), batch, batch_tokens, n_fail, t1 - t0, slots, kept);
+    }
+    return n_fail ? 1 : 0;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -209,6 +307,8 @@ int main(int argc, char ** argv) {
                               // the two agree bit for bit at equal length.
     int  n_threads  = 4;
     int  max_new    = 256;
+    int  batch      = 1;      // --batch N; 1 is the unbatched path, untouched
+    int  batch_tokens = 2048;
 
     for (int i = 1; i < argc; ++i) {
         const char * a = argv[i];
@@ -228,6 +328,9 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(a, "-b") || !std::strcmp(a, "--backend")) backend   = need(a);
         else if (!std::strcmp(a, "--list-backends"))                   list_backends = true;
         else if (!std::strcmp(a, "--no-cache"))                        use_cache  = false;
+        else if (!std::strcmp(a, "--batch"))                           batch      = std::atoi(need(a));
+        else if (!std::strcmp(a, "--batch-tokens"))                    batch_tokens = std::atoi(need(a));
+        else if (!std::strcmp(a, "--no-batch"))                        batch      = 1;
         else if (!std::strcmp(a, "--kv-f16"))                          kv_f16     = true;
         else if (!std::strcmp(a, "--list-langs"))                      list_langs = true;
         else if (!std::strcmp(a, "-v") || !std::strcmp(a, "--verbose")) verbose   = true;
@@ -258,6 +361,14 @@ int main(int argc, char ** argv) {
     if (model_path.empty()) { usage(argv[0]); return 2; }
     if (n_threads < 1)      { std::fprintf(stderr, "--threads must be >= 1\n"); return 2; }
     if (max_new   < 1)      { std::fprintf(stderr, "--max-new-tokens must be >= 1\n"); return 2; }
+    if (batch     < 1)      { std::fprintf(stderr, "--batch must be >= 1\n"); return 2; }
+    if (batch > 1 && !use_cache) {
+        // Batching exists on the cached path only. Someone passing both is
+        // comparing two numbers; quietly changing one of them would be the worst
+        // thing this binary could do to them.
+        std::fprintf(stderr, "--batch and --no-cache are mutually exclusive\n");
+        return 2;
+    }
 
     std::string err;
 
@@ -384,6 +495,11 @@ int main(int argc, char ** argv) {
             "quoted argument, or pipe it in.\n");
         usage(argv[0]);
         return 2;
+    }
+
+    if (batch > 1) {
+        return translate_stdin_batched(model, vocab, src_lang, tgt_id, base,
+                                       n_threads, batch, batch_tokens, verbose);
     }
 
     std::string line;

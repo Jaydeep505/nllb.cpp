@@ -1182,6 +1182,8 @@ void nllb_kv_cache_release(nllb_kv_cache & cache) {
     if (cache.ctx)   { ggml_free(cache.ctx); cache.ctx = nullptr; }
     cache.k_self.clear();  cache.v_self.clear();
     cache.k_cross.clear(); cache.v_cross.clear();
+    cache.n_batch = 1;
+    cache.src_len.clear();
 }
 } // namespace
 
@@ -1234,6 +1236,8 @@ bool nllb_kv_cache_init(const nllb_model & model,
     cache.n_ctx   = n_ctx_cache;
     cache.n_past  = 0;
     cache.n_src   = Ts;
+    cache.n_batch = 1;
+    cache.src_len.assign(1, Ts);
     cache.d_model = D;
     cache.n_head  = H;
     cache.n_layer = L;
@@ -1330,6 +1334,7 @@ bool nllb_decode_cached(const nllb_model & model,
     if (!cache.ctx || !cache.buf) { err = "kv cache is not initialised (call nllb_kv_cache_init)"; return false; }
     if (cache.model != &model) { err = "kv cache was built for a different nllb_model"; return false; }
     if (Tn <= 0)            { err = "empty decoder input"; return false; }
+    if (cache.n_batch != 1) { err = "batched kv cache: use nllb_decode_cached_batch"; return false; }
     if (cache.n_layer != L || cache.d_model != D || cache.n_head != H) {
         err = "kv cache was built for a different model shape";
         return false;
@@ -1763,4 +1768,684 @@ bool nllb_generate(const nllb_model & model,
     }
 
     return true;
+}
+
+// ==========================================================================
+// batching (step 11, rebuilt on the step-13 backend). See nllb.h.
+//
+// Everything below mirrors the single-sequence functions above op for op, with
+// two changes: activations carry all rows ([D, T*B]) and attention carries the
+// batch as ne[3]. Keep it that way. tests/test_batch.cpp's [equal] pass holds
+// an equal-length batch BIT-IDENTICAL to separate single calls, and that only
+// holds while each row's arithmetic is the single path's arithmetic.
+// ==========================================================================
+
+namespace {
+
+// Encoder self-attention mask [Ts_k, Ts_q, 1, B]: per KEY, broadcast over
+// query rows. A pad QUERY row is not masked - it attends over the real keys
+// and produces finite garbage that the cross-attention mask then hides. Masking
+// it would give a row of all -inf, and softmax of that is NaN.
+void nllb_enc_pad_mask(std::vector<float> & m, const std::vector<int32_t> & len, int Ts) {
+    const int B = (int) len.size();
+    m.assign((size_t) Ts * Ts * B, 0.0f);
+    for (int b = 0; b < B; ++b) {
+        for (int q = 0; q < Ts; ++q) {
+            float * row = m.data() + ((size_t) b * Ts + q) * Ts;
+            for (int k = len[b]; k < Ts; ++k) row[k] = -INFINITY;
+        }
+    }
+}
+
+// Cross-attention mask [Ts, 1, 1, B]: -inf on each row's pad source columns.
+void nllb_cross_pad_mask(std::vector<float> & m, const std::vector<int32_t> & len, int Ts) {
+    const int B = (int) len.size();
+    m.assign((size_t) Ts * B, 0.0f);
+    for (int b = 0; b < B; ++b) {
+        for (int k = len[b]; k < Ts; ++k) m[(size_t) b * Ts + k] = -INFINITY;
+    }
+}
+
+// argmax + runner-up with nllb_generate's exact tie rule (strict >, so the
+// lower id wins, as torch.argmax does).
+void nllb_argmax2(const float * p, int n, int & best, int & second) {
+    best = 0; second = -1;
+    for (int i = 1; i < n; ++i) {
+        if (p[i] > p[best]) { second = best; best = i; }
+        else if (second < 0 || p[i] > p[second]) second = i;
+    }
+}
+
+} // namespace
+
+bool nllb_encode_batch(const nllb_model & model,
+                       const std::vector<std::vector<int32_t>> & srcs,
+                       int n_threads,
+                       nllb_encode_batch_result & out,
+                       std::string & err,
+                       int pad_to,
+                       int32_t filler) {
+    const nllb_hparams & hp = model.hp;
+    const int B  = (int) srcs.size();
+    const int D  = hp.d_model;
+    const int H  = hp.n_head;
+    const int HD = hp.head_dim();
+
+    if (B <= 0) { err = "empty batch"; return false; }
+
+    const int32_t embd_rows = (int32_t) model.tok_embd->ne[1];
+    if (filler < 0) filler = hp.pad_id;
+    if (filler >= embd_rows) { err = "filler token out of range"; return false; }
+
+    std::vector<int32_t> len(B);
+    int Ts = 0;
+    for (int b = 0; b < B; ++b) {
+        const auto & s = srcs[b];
+        if (s.empty()) { err = "empty source in batch row " + std::to_string(b); return false; }
+        for (int32_t id : s) {
+            if (id == hp.pad_id) {
+                err = "source row " + std::to_string(b) + " contains pad_id; padding is the batch's job";
+                return false;
+            }
+            if (id < 0 || id >= embd_rows) {
+                err = "source row " + std::to_string(b) + " has an id out of range: " + std::to_string(id);
+                return false;
+            }
+        }
+        len[b] = (int32_t) s.size();
+        if (len[b] > Ts) Ts = len[b];
+    }
+    if (pad_to > Ts) Ts = pad_to;
+    if (hp.n_ctx > 0 && Ts > hp.n_ctx) { err = "sequence too long"; return false; }
+
+    // ids right-padded with the filler; positions from the LENGTH, never from
+    // the filler: real token j -> j + 1 + pad_id (what nllb_encode's cumsum
+    // rule gives an unpadded sequence), pad -> pad_id.
+    std::vector<int32_t> ids((size_t) Ts * B), pos((size_t) Ts * B);
+    for (int b = 0; b < B; ++b) {
+        for (int j = 0; j < Ts; ++j) {
+            const bool real = j < len[b];
+            ids[(size_t) b * Ts + j] = real ? srcs[b][j] : filler;
+            pos[(size_t) b * Ts + j] = real ? j + 1 + hp.pad_id : hp.pad_id;
+        }
+    }
+    std::vector<float> mask;
+    nllb_enc_pad_mask(mask, len, Ts);
+
+    ggml_context * ctx = nllb_graph_ctx(model.graph_meta);
+    if (!ctx) { err = "ggml_init failed"; return false; }
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
+
+    ggml_tensor * inp_ids  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Ts * B);
+    ggml_tensor * inp_pos  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Ts * B);
+    ggml_tensor * enc_mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, Ts, Ts, 1, B);
+    ggml_set_name(inp_ids,  "inp_ids");
+    ggml_set_name(inp_pos,  "inp_pos");
+    ggml_set_name(enc_mask, "enc_mask");
+    ggml_set_input(inp_ids);
+    ggml_set_input(inp_pos);
+    ggml_set_input(enc_mask);
+
+    ggml_tensor * cur = ggml_get_rows(ctx, model.tok_embd, inp_ids);       // [D, Ts*B]
+    cur = ggml_scale(ctx, cur, hp.embd_scale);
+    cur = ggml_add(ctx, cur, ggml_get_rows(ctx, model.pos_embd, inp_pos));
+
+    const float attn_scale = 1.0f / std::sqrt((float) HD);
+
+    for (int il = 0; il < hp.n_layer; ++il) {
+        const nllb_enc_layer & l = model.enc[il];
+
+        ggml_tensor * residual = cur;
+        ggml_tensor * h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.attn_norm_w), l.attn_norm_b);
+
+        ggml_tensor * Q = ggml_add(ctx, ggml_mul_mat(ctx, l.wq, h), l.bq);
+        Q = ggml_scale(ctx, Q, attn_scale);
+        ggml_tensor * K = ggml_add(ctx, ggml_mul_mat(ctx, l.wk, h), l.bk);
+        ggml_tensor * V = ggml_add(ctx, ggml_mul_mat(ctx, l.wv, h), l.bv);
+
+        Q = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_4d(ctx, Q, HD, H, Ts, B), 0, 2, 1, 3));  // (HD, Ts, H, B)
+        K = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_4d(ctx, K, HD, H, Ts, B), 0, 2, 1, 3));  // (HD, Ts, H, B)
+        V = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_4d(ctx, V, HD, H, Ts, B), 1, 2, 0, 3));  // (Ts, HD, H, B)
+
+        ggml_tensor * kq = ggml_mul_mat(ctx, K, Q);                   // (Ts, Ts, H, B)
+        kq = ggml_soft_max_ext(ctx, kq, enc_mask, 1.0f, 0.0f);        // MASK: pad keys
+        ggml_tensor * kqv = ggml_mul_mat(ctx, V, kq);                 // (HD, Ts, H, B)
+
+        kqv = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));     // (HD, H, Ts, B)
+        cur = ggml_reshape_2d(ctx, kqv, D, Ts * B);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.wo, cur), l.bo);
+        cur = ggml_add(ctx, cur, residual);
+
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.ffn_norm_w), l.ffn_norm_b);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_up, h), l.b_up);
+        h = ggml_relu(ctx, h);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_down, h), l.b_down);
+        cur = ggml_add(ctx, h, residual);
+    }
+
+    cur = ggml_norm(ctx, cur, hp.eps);
+    cur = ggml_add(ctx, ggml_mul(ctx, cur, model.out_norm_w), model.out_norm_b);
+    ggml_set_name(cur, "enc_out");
+    ggml_set_output(cur);
+    ggml_build_forward_expand(gf, cur);
+
+    ggml_backend_sched * sched = model.sched;
+    bool ok = nllb_alloc_graph(sched, gf, "encoder batch", err);
+    if (ok) {
+        ggml_backend_tensor_set(inp_ids,  ids.data(),  0, ids.size()  * sizeof(int32_t));
+        ggml_backend_tensor_set(inp_pos,  pos.data(),  0, pos.size()  * sizeof(int32_t));
+        ggml_backend_tensor_set(enc_mask, mask.data(), 0, mask.size() * sizeof(float));
+        ok = nllb_compute_graph(model, sched, gf, n_threads, "encoder batch", err);
+    }
+    if (ok) {
+        out.n_rows   = B;
+        out.n_tokens = Ts;
+        out.d_model  = D;
+        out.src_len  = len;
+        nllb_get_f32(cur, out.output, (size_t) Ts * B * D);
+    }
+    ggml_backend_sched_reset(sched);
+    ggml_free(ctx);
+    return ok;
+}
+
+bool nllb_kv_cache_init_batch(const nllb_model & model,
+                              const nllb_encode_batch_result & enc,
+                              int n_ctx_cache,
+                              int n_threads,
+                              nllb_kv_cache & cache,
+                              std::string & err,
+                              int kv_type) {
+    const nllb_hparams & hp = model.hp;
+    const int D  = hp.d_model;
+    const int H  = hp.n_dec_head;
+    const int HD = hp.dec_head_dim();
+    const int L  = hp.n_dec_layer;
+    const int Ts = enc.n_tokens;
+    const int B  = enc.n_rows;
+
+    if (!model.has_decoder) { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
+    if (n_ctx_cache <= 0)   { err = "kv cache capacity must be > 0"; return false; }
+    if (B <= 0 || Ts <= 0)  { err = "empty encoder batch"; return false; }
+    if (enc.d_model != D)   { err = "encoder output d_model mismatch"; return false; }
+    if ((int) enc.src_len.size() != B) { err = "encoder batch src_len size mismatch"; return false; }
+    if (enc.output.size() != (size_t) Ts * B * D) { err = "encoder batch output size mismatch"; return false; }
+    if (hp.n_ctx > 0 && n_ctx_cache > hp.n_ctx) {
+        err = "kv cache capacity " + std::to_string(n_ctx_cache) +
+              " exceeds the model's n_ctx " + std::to_string(hp.n_ctx);
+        return false;
+    }
+    if (kv_type != NLLB_KV_F32 && kv_type != NLLB_KV_F16) {
+        err = "unknown kv cache type " + std::to_string(kv_type);
+        return false;
+    }
+    const ggml_type kvt = kv_type == NLLB_KV_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+
+    nllb_kv_cache_release(cache);
+
+    ggml_init_params cp = {};
+    cp.mem_size   = (size_t) ggml_tensor_overhead() * (4 * L + 16);
+    cp.mem_buffer = nullptr;
+    cp.no_alloc   = true;
+    cache.ctx = ggml_init(cp);
+    if (!cache.ctx) { err = "ggml_init failed (kv cache)"; return false; }
+
+    cache.kv_type = kv_type;
+    cache.n_ctx   = n_ctx_cache;
+    cache.n_past  = 0;
+    cache.n_src   = Ts;
+    cache.n_batch = B;
+    cache.src_len = enc.src_len;
+    cache.d_model = D;
+    cache.n_head  = H;
+    cache.n_layer = L;
+    cache.model   = &model;
+
+    cache.k_self.resize(L);  cache.v_self.resize(L);
+    cache.k_cross.resize(L); cache.v_cross.resize(L);
+    for (int il = 0; il < L; ++il) {
+        cache.k_self[il]  = ggml_new_tensor_4d(cache.ctx, kvt, HD, n_ctx_cache, H, B);
+        cache.v_self[il]  = ggml_new_tensor_4d(cache.ctx, kvt, n_ctx_cache, HD, H, B);
+        cache.k_cross[il] = ggml_new_tensor_4d(cache.ctx, kvt, HD, Ts, H, B);
+        cache.v_cross[il] = ggml_new_tensor_4d(cache.ctx, kvt, Ts, HD, H, B);
+    }
+    cache.buf = ggml_backend_alloc_ctx_tensors_from_buft(
+            cache.ctx, ggml_backend_get_default_buffer_type(model.backend));
+    if (!cache.buf) {
+        err = "kv cache allocation failed on " + model.backend_name;
+        nllb_kv_cache_release(cache);
+        return false;
+    }
+    ggml_backend_buffer_set_usage(cache.buf, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+
+    cache.sched = nllb_new_sched(model);
+    if (!cache.sched) { err = "ggml_backend_sched_new failed (kv cache)";
+                        nllb_kv_cache_release(cache); return false; }
+
+    ggml_context * ctx = nllb_graph_ctx(model.graph_meta);
+    if (!ctx) { err = "ggml_init failed (cross-attention cache build)";
+                nllb_kv_cache_release(cache); return false; }
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
+
+    ggml_tensor * enc_t = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D, Ts * B);
+    ggml_set_name(enc_t, "enc_out");
+    ggml_set_input(enc_t);
+
+    for (int il = 0; il < L; ++il) {
+        const nllb_dec_layer & l = model.dec[il];
+        ggml_tensor * cK = ggml_add(ctx, ggml_mul_mat(ctx, l.cwk, enc_t), l.cbk);
+        ggml_tensor * cV = ggml_add(ctx, ggml_mul_mat(ctx, l.cwv, enc_t), l.cbv);
+        cK = ggml_permute(ctx, ggml_reshape_4d(ctx, cK, HD, H, Ts, B), 0, 2, 1, 3); // (HD, Ts, H, B)
+        cV = ggml_permute(ctx, ggml_reshape_4d(ctx, cV, HD, H, Ts, B), 1, 2, 0, 3); // (Ts, HD, H, B)
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, cK, cache.k_cross[il]));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, cV, cache.v_cross[il]));
+    }
+
+    bool ok = nllb_alloc_graph(model.sched, gf, "cross-kv batch", err);
+    if (ok) {
+        ggml_backend_tensor_set(enc_t, enc.output.data(), 0, enc.output.size() * sizeof(float));
+        ok = nllb_compute_graph(model, model.sched, gf, n_threads, "cross-attention cache batch", err);
+    }
+    ggml_backend_sched_reset(model.sched);
+    ggml_free(ctx);
+    if (!ok) { nllb_kv_cache_release(cache); return false; }
+    return true;
+}
+
+bool nllb_decode_cached_batch(const nllb_model & model,
+                              nllb_kv_cache & cache,
+                              const std::vector<int32_t> & new_ids,
+                              int n_threads,
+                              bool want_hidden_states,
+                              nllb_decode_result & out,
+                              std::string & err,
+                              nllb_step_timing * timing) {
+    const clk::time_point t_enter = clk::now();
+    if (timing) *timing = nllb_step_timing();
+
+    const nllb_hparams & hp = model.hp;
+    const int B  = (int) new_ids.size();
+    const int D  = hp.d_model;
+    const int H  = hp.n_dec_head;
+    const int HD = hp.dec_head_dim();
+    const int L  = hp.n_dec_layer;
+
+    if (!model.has_decoder) { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
+    if (!cache.ctx || !cache.buf) { err = "kv cache is not initialised (call nllb_kv_cache_init_batch)"; return false; }
+    if (cache.model != &model) { err = "kv cache was built for a different nllb_model"; return false; }
+    if (B != cache.n_batch) {
+        err = "batch step got " + std::to_string(B) + " ids for a cache of " +
+              std::to_string(cache.n_batch) + " rows (one new token per row)";
+        return false;
+    }
+    if (cache.n_layer != L || cache.d_model != D || cache.n_head != H) {
+        err = "kv cache was built for a different model shape";
+        return false;
+    }
+    if ((int) cache.src_len.size() != B) { err = "kv cache src_len size mismatch"; return false; }
+    const int32_t n_vocab   = (int32_t) model.lm_head()->ne[1];
+    const int32_t embd_rows = (int32_t) model.tok_embd->ne[1];
+    for (int32_t id : new_ids) {
+        if (id < 0 || id >= embd_rows) { err = "decoder id out of range: " + std::to_string(id); return false; }
+    }
+    const int Ts     = cache.n_src;
+    const int n_past = cache.n_past;
+    const int n_kv   = n_past + 1;
+    if (n_kv > cache.n_ctx) {
+        err = "kv cache is full: " + std::to_string(n_past) + " + 1 > capacity " + std::to_string(cache.n_ctx);
+        return false;
+    }
+
+    ggml_backend_sched * sched = cache.sched;
+    ggml_backend_sched * fresh = nullptr;
+    if (!cache.reuse_scratch || !sched) {
+        fresh = nllb_new_sched(model);
+        if (!fresh) { err = "ggml_backend_sched_new failed (batched decoder)"; return false; }
+        sched = fresh;
+    }
+
+    ggml_context * ctx = nllb_graph_ctx(cache.graph_meta);
+    if (!ctx) { if (fresh) ggml_backend_sched_free(fresh);
+                err = "ggml_init failed (batched decoder)"; return false; }
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, NLLB_GRAPH_NODES, false);
+
+    ggml_tensor * inp_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, B);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, B);
+    ggml_set_name(inp_ids, "dec_ids");
+    ggml_set_name(inp_pos, "dec_pos");
+    ggml_set_input(inp_ids);
+    ggml_set_input(inp_pos);
+
+    // NLLB_POS_ABSOLUTE per row, exactly nllb_decode_cached's rule.
+    std::vector<int32_t> pos(B);
+    for (int b = 0; b < B; ++b) {
+        pos[b] = (new_ids[b] == hp.pad_id) ? hp.pad_id : n_past + 1 + hp.pad_id;
+    }
+
+    // Self-attention: one new query per row, and the decoder is never padded,
+    // so every row may see keys 0..n_past - the same [n_kv, 1] mask the single
+    // path builds, broadcast over heads and rows.
+    ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, 1);
+    ggml_set_name(kq_mask, "kq_mask");
+    ggml_set_input(kq_mask);
+    std::vector<float> mask;
+    nllb_causal_mask(mask, n_kv, 1, n_past);
+
+    // Cross-attention: this is the only thing keeping each row's pad source
+    // columns out of the softmax, on every step.
+    ggml_tensor * x_mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, Ts, 1, 1, B);
+    ggml_set_name(x_mask, "cross_mask");
+    ggml_set_input(x_mask);
+    std::vector<float> xmask;
+    nllb_cross_pad_mask(xmask, cache.src_len, Ts);
+
+    ggml_tensor * cur = ggml_get_rows(ctx, model.tok_embd, inp_ids);   // [D, B]
+    cur = ggml_scale(ctx, cur, hp.embd_scale);
+    cur = ggml_add(ctx, cur, ggml_get_rows(ctx, model.pos_embd, inp_pos));
+
+    std::vector<ggml_tensor *> hs;
+    hs.reserve(L + 1);
+    const float attn_scale = 1.0f / std::sqrt((float) HD);
+
+    for (int il = 0; il < L; ++il) {
+        const nllb_dec_layer & l = model.dec[il];
+        hs.push_back(cur);
+
+        ggml_tensor * residual = cur;
+        ggml_tensor * h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.attn_norm_w), l.attn_norm_b);
+
+        ggml_tensor * Q = ggml_add(ctx, ggml_mul_mat(ctx, l.wq, h), l.bq);
+        Q = ggml_scale(ctx, Q, attn_scale);
+        ggml_tensor * K = ggml_add(ctx, ggml_mul_mat(ctx, l.wk, h), l.bk);
+        ggml_tensor * V = ggml_add(ctx, ggml_mul_mat(ctx, l.wv, h), l.bv);
+
+        Q = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_4d(ctx, Q, HD, H, 1, B), 0, 2, 1, 3));    // (HD, 1, H, B)
+
+        ggml_tensor * kc = cache.k_self[il];
+        ggml_tensor * vc = cache.v_self[il];
+
+        ggml_tensor * Kp = ggml_permute(ctx,
+                ggml_reshape_4d(ctx, K, HD, H, 1, B), 0, 2, 1, 3);     // (HD, 1, H, B)
+        ggml_tensor * Vp = ggml_permute(ctx,
+                ggml_reshape_4d(ctx, V, HD, H, 1, B), 1, 2, 0, 3);     // (1, HD, H, B)
+
+        // The BATCH STRIDE is nb[3]. Taking it from nb[2] compiles, reads fine,
+        // writes every row into row 0's slot, and is invisible at B = 1 - the
+        // [equal] and [perm] passes are what see it.
+        ggml_tensor * k_dst = ggml_view_4d(ctx, kc, HD, 1, H, B,
+                kc->nb[1], kc->nb[2], kc->nb[3], (size_t) n_past * kc->nb[1]);
+        ggml_tensor * v_dst = ggml_view_4d(ctx, vc, 1, HD, H, B,
+                vc->nb[1], vc->nb[2], vc->nb[3], (size_t) n_past * vc->nb[0]);
+
+        // ORDER MATTERS (trap 15): the writes before anything reads the cache.
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kp, k_dst));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));
+
+        ggml_tensor * Kv = ggml_view_4d(ctx, kc, HD, n_kv, H, B,
+                kc->nb[1], kc->nb[2], kc->nb[3], 0);                    // (HD, n_kv, H, B)
+        if (model.kv_k_cont) Kv = ggml_cont(ctx, Kv);
+        ggml_tensor * Vv = ggml_view_4d(ctx, vc, n_kv, HD, H, B,
+                vc->nb[1], vc->nb[2], vc->nb[3], 0);                    // (n_kv, HD, H, B)
+
+        ggml_tensor * kq = ggml_mul_mat(ctx, Kv, Q);                    // (n_kv, 1, H, B)
+        kq = ggml_soft_max_ext(ctx, kq, kq_mask, 1.0f, 0.0f);
+        ggml_tensor * kqv = ggml_mul_mat(ctx, Vv, kq);                  // (HD, 1, H, B)
+
+        kqv = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));       // (HD, H, 1, B)
+        cur = ggml_reshape_2d(ctx, kqv, D, B);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.wo, cur), l.bo);
+        cur = ggml_add(ctx, cur, residual);
+
+        // ---- cross-attention, MASKED per row ----
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.cross_norm_w), l.cross_norm_b);
+
+        ggml_tensor * cQ = ggml_add(ctx, ggml_mul_mat(ctx, l.cwq, h), l.cbq);
+        cQ = ggml_scale(ctx, cQ, attn_scale);
+        cQ = ggml_cont(ctx, ggml_permute(ctx,
+                ggml_reshape_4d(ctx, cQ, HD, H, 1, B), 0, 2, 1, 3));   // (HD, 1, H, B)
+
+        ggml_tensor * ckq = ggml_mul_mat(ctx, cache.k_cross[il], cQ);  // (Ts, 1, H, B)
+        ckq = ggml_soft_max_ext(ctx, ckq, x_mask, 1.0f, 0.0f);
+        ggml_tensor * ckqv = ggml_mul_mat(ctx, cache.v_cross[il], ckq); // (HD, 1, H, B)
+
+        ckqv = ggml_cont(ctx, ggml_permute(ctx, ckqv, 0, 2, 1, 3));     // (HD, H, 1, B)
+        cur = ggml_reshape_2d(ctx, ckqv, D, B);
+        cur = ggml_add(ctx, ggml_mul_mat(ctx, l.cwo, cur), l.cbo);
+        cur = ggml_add(ctx, cur, residual);
+
+        residual = cur;
+        h = ggml_norm(ctx, cur, hp.eps);
+        h = ggml_add(ctx, ggml_mul(ctx, h, l.ffn_norm_w), l.ffn_norm_b);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_up, h), l.b_up);
+        h = ggml_relu(ctx, h);
+        h = ggml_add(ctx, ggml_mul_mat(ctx, l.w_down, h), l.b_down);
+        cur = ggml_add(ctx, h, residual);
+    }
+
+    cur = ggml_norm(ctx, cur, hp.eps);
+    cur = ggml_add(ctx, ggml_mul(ctx, cur, model.dec_out_norm_w), model.dec_out_norm_b);
+    ggml_set_name(cur, "dec_out");
+    ggml_set_output(cur);
+    hs.push_back(cur);
+
+    ggml_tensor * logits = ggml_mul_mat(ctx, model.lm_head(), cur);    // [n_vocab, B]
+    ggml_set_name(logits, "logits");
+    ggml_set_output(logits);
+    ggml_build_forward_expand(gf, logits);
+    ggml_build_forward_expand(gf, cur);
+    if (want_hidden_states) {
+        for (ggml_tensor * t : hs) { ggml_set_output(t); ggml_build_forward_expand(gf, t); }
+    }
+
+    const clk::time_point t_build1 = clk::now();
+    if (timing) {
+        timing->build   = ms_between(t_enter, t_build1);
+        timing->n_nodes = ggml_graph_n_nodes(gf);
+        timing->scratch_reused = fresh == nullptr;
+    }
+
+    bool ok = nllb_alloc_graph(sched, gf, "batched step", err);
+    const clk::time_point t_alloc1 = clk::now();
+    if (timing) {
+        timing->alloc = ms_between(t_build1, t_alloc1);
+        timing->arena = nllb_sched_bytes(sched);
+    }
+    if (ok) {
+        ggml_backend_tensor_set(inp_ids, new_ids.data(), 0, (size_t) B * sizeof(int32_t));
+        ggml_backend_tensor_set(inp_pos, pos.data(),     0, (size_t) B * sizeof(int32_t));
+        ggml_backend_tensor_set(kq_mask, mask.data(),    0, mask.size()  * sizeof(float));
+        ggml_backend_tensor_set(x_mask,  xmask.data(),   0, xmask.size() * sizeof(float));
+        ok = nllb_compute_graph(model, sched, gf, n_threads, "batched decoder", err);
+    }
+    const clk::time_point t_compute1 = clk::now();
+    if (timing) timing->compute = ms_between(t_alloc1, t_compute1);
+
+    if (ok) {
+        out.n_tokens     = B;
+        out.d_model      = D;
+        out.n_vocab      = n_vocab;
+        out.n_logit_rows = B;
+        nllb_get_f32(cur,    out.output, (size_t) B * D);
+        nllb_get_f32(logits, out.logits, (size_t) B * n_vocab);
+        out.hidden_states.clear();
+        if (want_hidden_states) {
+            out.hidden_states.resize(hs.size());
+            for (size_t i = 0; i < hs.size(); ++i) nllb_get_f32(hs[i], out.hidden_states[i], (size_t) B * D);
+        }
+    }
+    const clk::time_point t_read1 = clk::now();
+    if (timing) timing->readback = ms_between(t_compute1, t_read1);
+
+    ggml_backend_sched_reset(sched);
+    if (fresh) ggml_backend_sched_free(fresh);
+    ggml_free(ctx);
+
+    if (timing) {
+        timing->release = ms_between(t_read1, clk::now());
+        timing->total   = ms_between(t_enter, clk::now());
+    }
+    if (!ok) return false;
+    cache.n_past = n_kv;
+    return true;
+}
+
+bool nllb_generate_batch(const nllb_model & model,
+                         const std::vector<std::vector<int32_t>> & srcs,
+                         const std::vector<int32_t> & forced_bos_ids,
+                         const nllb_generate_params & params,
+                         int n_threads,
+                         nllb_generate_batch_result & out,
+                         std::string & err,
+                         bool (*on_row_token)(int row, int32_t token, void * user),
+                         void * on_row_token_user) {
+    const nllb_hparams & hp = model.hp;
+    const int B = (int) srcs.size();
+
+    if (!model.has_decoder) { err = "GGUF has no decoder (converted with --encoder-only?)"; return false; }
+    if (B <= 0)                     { err = "empty batch"; return false; }
+    if (params.max_new_tokens <= 0) { err = "max_new_tokens must be > 0"; return false; }
+    if (!forced_bos_ids.empty() && (int) forced_bos_ids.size() != B) {
+        err = "forced_bos_ids has " + std::to_string(forced_bos_ids.size()) +
+              " entries for " + std::to_string(B) + " rows";
+        return false;
+    }
+
+    const int32_t eos   = params.eos_id       >= 0 ? params.eos_id       : hp.eos_id;
+    const int32_t start = params.dec_start_id >= 0 ? params.dec_start_id : hp.dec_start_id;
+    const int32_t n_vocab   = (int32_t) model.lm_head()->ne[1];
+    const int32_t embd_rows = (int32_t) model.tok_embd->ne[1];
+    const int32_t id_limit  = n_vocab < embd_rows ? n_vocab : embd_rows;
+
+    std::vector<int32_t> forced(B, params.forced_bos_id);
+    if (!forced_bos_ids.empty()) forced = forced_bos_ids;
+    for (int b = 0; b < B; ++b) {
+        if (forced[b] < -1 || forced[b] >= id_limit) {
+            err = "forced_bos_id[" + std::to_string(b) + "] = " + std::to_string(forced[b]) + " out of range";
+            return false;
+        }
+    }
+    if (start < 0 || start >= id_limit) { err = "decoder_start_token_id out of range"; return false; }
+    if (eos   < 0 || eos   >= id_limit) { err = "eos_id out of range"; return false; }
+
+    out = nllb_generate_batch_result();
+    out.seq.assign(B, nllb_generate_result());
+
+    nllb_encode_batch_result enc;
+    if (!nllb_encode_batch(model, srcs, n_threads, enc, err)) return false;
+    out.n_src = enc.n_tokens;
+
+    int cap = params.max_new_tokens + 1;
+    if (hp.n_ctx > 0 && cap > hp.n_ctx) cap = hp.n_ctx;
+    nllb_kv_cache cache;
+    if (!nllb_kv_cache_init_batch(model, enc, cap, n_threads, cache, err, params.kv_type)) return false;
+
+    std::vector<char> done(B, 0);
+    for (int b = 0; b < B; ++b) {
+        nllb_generate_result & r = out.seq[b];
+        r.n_src = (int32_t) srcs[b].size();
+        r.stop  = NLLB_STOP_MAX_NEW;
+        r.used_cache = true;
+        r.ids.reserve((size_t) params.max_new_tokens + 1);
+        r.ids.push_back(start);
+    }
+
+    int n_live = B;
+    std::vector<int32_t> feed(B);
+    for (int step = 0; step < params.max_new_tokens && n_live > 0; ++step) {
+        // Every live row has length step + 1; the same n_ctx rule as nllb_generate.
+        if (hp.n_ctx > 0 && step + 1 > hp.n_ctx) {
+            for (int b = 0; b < B; ++b) if (!done[b]) { out.seq[b].stop = NLLB_STOP_CONTEXT; done[b] = 1; }
+            break;
+        }
+        if (cache.n_past != step) {
+            err = "kv cache out of step with the batch: n_past=" + std::to_string(cache.n_past) +
+                  ", expected " + std::to_string(step);
+            return false;
+        }
+        // A finished row is fed pad_id. Nothing reads its output, and its slice
+        // is computed independently of every other row's (trap 43): this is HF
+        // parity, not correctness.
+        for (int b = 0; b < B; ++b) feed[b] = done[b] ? hp.pad_id : out.seq[b].ids.back();
+
+        nllb_decode_result dec;
+        if (!nllb_decode_cached_batch(model, cache, feed, n_threads, false, dec, err)) return false;
+        if (dec.n_logit_rows != B || dec.logits.size() != (size_t) B * dec.n_vocab) {
+            err = "batched decoder returned unexpected logits shape";
+            return false;
+        }
+        out.steps = step + 1;
+        out.token_slots += B;
+
+        for (int b = 0; b < B; ++b) {
+            if (done[b]) continue;
+            nllb_generate_result & r = out.seq[b];
+            const float * p = dec.logits.data() + (size_t) b * dec.n_vocab;
+            int best = 0, second = -1;
+            nllb_argmax2(p, dec.n_vocab, best, second);
+
+            nllb_generate_step s;
+            s.argmax = best;
+            s.logit  = p[best];
+            s.margin = second >= 0 ? p[best] - p[second] : 0.0f;
+            s.forced = (step == 0 && forced[b] >= 0);
+            s.token  = s.forced ? forced[b] : best;
+
+            r.ids.push_back(s.token);
+            r.steps.push_back(s);
+            out.tokens_kept++;
+
+            if (s.token == eos) {
+                r.stop = NLLB_STOP_EOS;
+                r.hit_eos = true;
+                done[b] = 1; --n_live;
+                if (on_row_token) on_row_token(b, s.token, on_row_token_user);
+                continue;
+            }
+            if (on_row_token && !on_row_token(b, s.token, on_row_token_user)) {
+                r.stop = NLLB_STOP_ABORTED;
+                done[b] = 1; --n_live;
+            }
+        }
+    }
+    return true;
+}
+
+std::vector<std::vector<int32_t>> nllb_plan_batches(const std::vector<int32_t> & lengths,
+                                                    int max_seqs,
+                                                    int max_tokens) {
+    std::vector<std::vector<int32_t>> groups;
+    const int n = (int) lengths.size();
+    if (n == 0) return groups;
+    if (max_seqs < 1) max_seqs = 1;
+
+    // Rule 1: sort by length, so a group's padding is the spread WITHIN it.
+    // Stable, so equal lengths keep input order and the plan is deterministic.
+    std::vector<int32_t> order(n);
+    for (int i = 0; i < n; ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int32_t a, int32_t b) { return lengths[a] < lengths[b]; });
+
+    // Rule 2: budget by PADDED tokens. Ascending order means the newest member
+    // is the longest, so a group's padded size is count * that length.
+    std::vector<int32_t> g;
+    for (int32_t idx : order) {
+        const int64_t width = lengths[idx];
+        const bool fits_count  = (int) g.size() < max_seqs;
+        const bool fits_tokens = max_tokens <= 0 || (int64_t)(g.size() + 1) * width <= max_tokens;
+        if (!g.empty() && !(fits_count && fits_tokens)) { groups.push_back(g); g.clear(); }
+        g.push_back(idx);   // a lone over-budget source still gets its own group
+    }
+    if (!g.empty()) groups.push_back(g);
+    // Rule 3 is the caller's: these are INPUT INDICES.
+    return groups;
 }

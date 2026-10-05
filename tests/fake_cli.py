@@ -125,8 +125,11 @@ def serve(argv: list[str]) -> int:
     i = 0
     while i < len(argv):
         a = argv[i]
+        # --batch N / --batch-tokens N are accepted and IGNORED: this stand-in
+        # looks its answers up and has no decoder steps to share, so it cannot
+        # test the batched path, and pretending to would be worse than the gap.
         if a in ("-m", "--model", "-t", "--threads", "-n", "--max-new-tokens",
-                 "-b", "--backend"):
+                 "-b", "--backend", "--batch", "--batch-tokens"):
             i += 2
             continue
         if a == "--src":
@@ -137,7 +140,7 @@ def serve(argv: list[str]) -> int:
             verbose = True; i += 1; continue
         if a == "--list-langs":
             list_langs = True; i += 1; continue
-        if a == "--no-cache":
+        if a in ("--no-cache", "--no-batch"):
             i += 1; continue
         if a.startswith("-") and a != "-":
             print(f"unknown option: {a}", file=sys.stderr)

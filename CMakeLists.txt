@@ -293,6 +293,11 @@ target_link_libraries(nllb-test-generate PRIVATE nllb)
 target_compile_options(nllb-test-generate PRIVATE ${NLLB_WARN})
 set_target_properties(nllb-test-generate PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+add_executable(nllb-test-batch tests/test_batch.cpp)
+target_link_libraries(nllb-test-batch PRIVATE nllb)
+target_compile_options(nllb-test-batch PRIVATE ${NLLB_WARN})
+set_target_properties(nllb-test-batch PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 add_executable(nllb-test-cache tests/test_cache.cpp)
 target_link_libraries(nllb-test-cache PRIVATE nllb)
 target_compile_options(nllb-test-cache PRIVATE ${NLLB_WARN})
