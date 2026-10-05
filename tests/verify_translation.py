@@ -311,6 +311,10 @@ def main() -> int:
     ap.add_argument("--goldens", default="translations.txt")
     ap.add_argument("--no-golden", action="store_true")
     ap.add_argument("--no-stdin", action="store_true")
+    ap.add_argument("--batch", type=int, default=0,
+                    help="run the [stdin] pass through nllb-cli --batch N. Its output "
+                         "must be BYTE-IDENTICAL to the same goldens the unbatched "
+                         "run matches - that is the batched product claim.")
     ap.add_argument("--no-wiring", action="store_true")
     ap.add_argument("--no-errors", action="store_true")
     ap.add_argument("--allow-id-drift", action="store_true",
@@ -422,7 +426,10 @@ def main() -> int:
             print("  skipped: a prompt contains a newline, which the "
                   "line-oriented stdin path cannot represent")
         else:
-            p = run(args.cli, args.model, base,
+            stdin_args = base + (["--batch", str(args.batch)] if args.batch > 1 else [])
+            if args.batch > 1:
+                print(f"  through the BATCHED path: --batch {args.batch}")
+            p = run(args.cli, args.model, stdin_args,
                     stdin="\n".join(c["source"] for c in cases) + "\n",
                     threads=args.threads)
             lines = p.stdout.split("\n")

@@ -326,7 +326,18 @@ struct nllb_kv_cache {
 
     int32_t n_ctx   = 0;   // capacity in decoder tokens
     int32_t n_past  = 0;   // tokens currently stored in the self-attention half
-    int32_t n_src   = 0;   // Ts the cross-attention half was built from
+    int32_t n_src   = 0;   // Ts the cross-attention half was built from (PADDED Ts if batched)
+
+    // Rows decoded in lockstep. 1 for nllb_kv_cache_init, B for
+    // nllb_kv_cache_init_batch. Every tensor below then carries a trailing
+    // batch dimension ne[3] = n_batch, and nllb_decode_cached refuses a cache
+    // with n_batch != 1 (use nllb_decode_cached_batch).
+    int32_t n_batch = 1;
+    // Real (unpadded) source length of each row; the cross-attention mask is
+    // built from this. It lives on the cache, not in a per-step argument, because
+    // it is a property of the encoder pass the cross half was built from - a
+    // caller who could pass a different one every step could unmask a pad.
+    std::vector<int32_t> src_len;
     int32_t d_model = 0;
     int32_t n_head  = 0;
     int32_t n_layer = 0;
@@ -526,3 +537,128 @@ bool nllb_generate(const nllb_model & model,
                    int n_threads,
                    nllb_generate_result & out,
                    std::string & err);
+
+// --------------------------------------------------------------------------
+// batching (step 11, rebuilt on the step-13 backend)
+//
+// B sources through ONE encoder pass and ONE decoder step per token. The
+// decoder step at B = 1 reads ~0.9 GB of weights to produce one token; at B it
+// reads the same bytes for B tokens, so ms/token falls until arithmetic, not
+// bandwidth, is the limit. Step 11 measured 2.67x at B = 8 on the shape fixture.
+//
+// These are NEW functions next to the single-sequence ones, not a rewrite of
+// them: nllb_encode / nllb_kv_cache_init / nllb_decode_cached / nllb_generate
+// are unchanged, so every gate that passed on Metal, CUDA, Vulkan and OpenCL
+// still tests the code it passed on. tests/test_batch.cpp diffs these against
+// those.
+//
+// Layout. Sources are RIGHT-padded to the longest in the batch (Ts). Right,
+// not left: the encoder position rule is cumsum(mask)*mask + pad_id, so a pad
+// shifts every LATER position; pads at the end have nothing after them. Real
+// tokens keep the positions they would have alone (traps 2 and 12).
+//
+//   activations   [D, Ts*B] (encoder), [D, B] (decoder step) - so every weight
+//                 matmul is ONE GEMM over all rows, which is the whole point
+//   attention     [., ., H, B]: the batch is ggml's ne[3], so each row's
+//                 attention is computed in its own slice
+//   k_self  [HD, n_ctx, H, B]   v_self  [n_ctx, HD, H, B]
+//   k_cross [HD, Ts,    H, B]   v_cross [Ts,    HD, H, B]
+//
+// Two masks are new, and they are the correctness-critical part:
+//   encoder self-attention  [Ts, Ts, 1, B]  -inf on pad KEYS, broadcast over
+//                           query rows (masking a pad's query row too would make
+//                           a row of all -inf, and softmax of that is NaN)
+//   cross-attention         [Ts, 1, 1, B]   -inf on pad source columns, every step
+// The pad rows' encoder outputs are NOT zeroed: zeroing would make a missing
+// mask almost-right instead of loudly wrong.
+//
+// A padded row cannot be bit-identical to its unpadded single call: padding
+// raises the softmax length and regroups the same real additions (trap 42,
+// which is trap 16 again). An UNPADDED row - and every row of an equal-length
+// batch - is bit-identical on the CPU, and tests/test_batch.cpp asserts that.
+// --------------------------------------------------------------------------
+
+struct nllb_encode_batch_result {
+    int32_t n_rows   = 0;
+    int32_t n_tokens = 0;              // Ts, the PADDED length
+    int32_t d_model  = 0;
+    std::vector<int32_t> src_len;      // real length per row
+    std::vector<float>   output;       // [B, Ts, D] row-major: row b starts at b*Ts*D
+};
+
+// pad_to > longest raises Ts (the [pad1] control: padding with no batch).
+// filler is the token written into pad positions (default pad_id). Nothing in
+// the graph may read it - positions and both masks come from the LENGTH - which
+// is what the [mask] pass in tests/test_batch.cpp asserts by changing it.
+// Sources may not contain pad_id.
+bool nllb_encode_batch(const nllb_model & model,
+                       const std::vector<std::vector<int32_t>> & srcs,
+                       int n_threads,
+                       nllb_encode_batch_result & out,
+                       std::string & err,
+                       int pad_to = 0,
+                       int32_t filler = -1);
+
+// Allocates a batched cache (n_batch = B) and fills its cross-attention half
+// from `enc` in one graph. n_ctx_cache as for nllb_kv_cache_init.
+bool nllb_kv_cache_init_batch(const nllb_model & model,
+                              const nllb_encode_batch_result & enc,
+                              int n_ctx_cache,
+                              int n_threads,
+                              nllb_kv_cache & cache,
+                              std::string & err,
+                              int kv_type = NLLB_KV_F32);
+
+// One lockstep decoder step: ONE new token per row (new_ids.size() == B). All
+// rows share n_past - the decoder side is never padded, because every row
+// starts at decoder_start and grows by exactly one token per step. A finished
+// row is fed pad_id (HF's batched generate() does the same); under
+// NLLB_POS_ABSOLUTE a pad takes position pad_id and shifts nothing.
+//
+// out.n_tokens = B, out.output = [B, D], out.logits = [B, n_vocab] with
+// n_logit_rows = B, and hidden_states (if asked) n_dec_layer + 1 of [B, D].
+bool nllb_decode_cached_batch(const nllb_model & model,
+                              nllb_kv_cache & cache,
+                              const std::vector<int32_t> & new_ids,
+                              int n_threads,
+                              bool want_hidden_states,
+                              nllb_decode_result & out,
+                              std::string & err,
+                              nllb_step_timing * timing = nullptr);
+
+struct nllb_generate_batch_result {
+    std::vector<nllb_generate_result> seq;   // one per input row, in input order
+    int32_t steps       = 0;                 // decoder steps run
+    int32_t n_src       = 0;                 // padded source length
+    // Decoder token-slots computed (steps * B) and the ones that produced a kept
+    // token. The difference is what one long row costs the others: finished
+    // rows are not dropped from the batch (not implemented, deliberately - see
+    // claude/step11-batching.md).
+    int64_t token_slots = 0;
+    int64_t tokens_kept = 0;
+};
+
+// Greedy generation for B sources at once, always on the cached path.
+// forced_bos_ids: one target-language id per row (rows may mix languages), or
+// empty to use params.forced_bos_id for every row. params.use_cache is ignored
+// (batching exists only on the cached path); params.on_token is not called -
+// use on_row_token, which also says which row, and returning false stops THAT
+// row with NLLB_STOP_ABORTED.
+bool nllb_generate_batch(const nllb_model & model,
+                         const std::vector<std::vector<int32_t>> & srcs,
+                         const std::vector<int32_t> & forced_bos_ids,
+                         const nllb_generate_params & params,
+                         int n_threads,
+                         nllb_generate_batch_result & out,
+                         std::string & err,
+                         bool (*on_row_token)(int row, int32_t token, void * user) = nullptr,
+                         void * on_row_token_user = nullptr);
+
+// Scheduling (step 11's three rules): sort by length, budget by PADDED tokens
+// (group size * longest member) as well as by count, and return INPUT INDICES
+// so the caller restores its own order. A single source over max_tokens still
+// gets a group of its own: the budget is a hint, not a refusal.
+// max_tokens <= 0 means no token budget.
+std::vector<std::vector<int32_t>> nllb_plan_batches(const std::vector<int32_t> & lengths,
+                                                    int max_seqs,
+                                                    int max_tokens);

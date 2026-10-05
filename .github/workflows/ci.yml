@@ -193,6 +193,29 @@ jobs:
           python tests/corrupt_backend.py build models/deep-f32.gguf ref-deep/ -t 4
           python tests/corrupt_backend.py build models/deep-f16.gguf ref-deep/ -t 4
 
+      - name: Batching (step 11, rebuilt) - batched vs single-sequence, no goldens
+        # [equal] [perm] [mask] [eos] [b1] are BIT-IDENTICAL claims on the CPU;
+        # [pad] holds padded rows to an absolute tolerance with [pad1] printed
+        # as its control. Seeded random sources: no ref/ directory involved.
+        run: |
+          python tests/make_shape_model.py models/bsmall-f32.gguf --d-model 256 \
+              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 256
+          python tests/make_shape_model.py models/bsmall-f16.gguf --d-model 256 \
+              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 256 --outtype f16
+          ./build/bin/nllb-test-batch models/bsmall-f32.gguf -t 4 --rows 8
+          ./build/bin/nllb-test-batch models/bsmall-f16.gguf -t 4 --rows 8
+          ./build/bin/nllb-test-batch models/bsmall-f32.gguf -t 4 --kv-f16
+
+      - name: Batching corruption matrix - ten mutations, the SAME table at f32 and f16
+        # Eight must be caught, two (trap 43) must stay inert. A matrix that
+        # changes with the weight type is a gate that means something different
+        # at each one, so the two tables are diffed.
+        run: |
+          set -o pipefail   # tee must not hide a failing matrix
+          python tests/corrupt_batch.py build models/bsmall-f32.gguf -t 4 | tee /tmp/m32.txt
+          python tests/corrupt_batch.py build models/bsmall-f16.gguf -t 4 | tee /tmp/m16.txt
+          diff <(sed -n '/^mutation/,/^$/p' /tmp/m32.txt) <(sed -n '/^mutation/,/^$/p' /tmp/m16.txt)
+
       - name: Profiler smoke test - nllb-bench must still run
         # Not a gate on any number: the sandbox and the runner are too noisy for
         # a time to assert on, and the numbers that matter were taken at the
@@ -330,6 +353,12 @@ jobs:
       - name: Backend port corruption matrix ON METAL - the same table as on the CPU?
         run: |
           NLLB_BACKEND=metal python tests/corrupt_backend.py build models/small-f16.gguf ref-small/ -t 3
+      - name: Batching gate ON METAL
+        # [perm] [mask] [eos] compare batched against batched and must hold.
+        # [equal]/[b1] compare against the single path, which may pick a
+        # different matmul kernel on a GPU (trap 48) - read, then decide.
+        run: |
+          ./build/bin/nllb-test-batch models/small-f16.gguf -t 3 --backend metal -v
 
   # ---------------------------------------------------------------------------
   # OPENCL (step 14). What this job can and cannot claim, stated up front so a

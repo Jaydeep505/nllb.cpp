@@ -15,12 +15,12 @@
 // most --batch-wait-ms for more, translates them as one group, and hands each
 // line its result.
 //
-// Today a group is translated row by row with nllb_generate, because the
-// library has no batched generate in this tree. The queue, the grouping and the
-// HTTP side are already shaped for it: engine::translate() receives the whole
-// group, and that function is the only thing that changes when
-// nllb_generate_batch lands. Rows may mix language pairs: the source code is
-// inside each row's ids and the target code is a per-row forced token.
+// A group of several lines goes through nllb_generate_batch: one encoder pass
+// and ONE decoder step per token for all of them, which is where the speed is
+// (the step reads ~0.9 GB of weights whether it produces 1 token or 8). A
+// group of one goes through nllb_generate, exactly nllb-cli's path. Rows may
+// mix language pairs: the source code is inside each row's ids and the target
+// code is a per-row forced token.
 //
 // Every call into nllb.cpp is in the "engine" section and nowhere else.
 // Build with -DNLLB_SERVER_MOCK to replace the model with a stand-in that needs
@@ -61,7 +61,8 @@ struct server_params {
     int32_t     write_timeout   = 60;
     int32_t     request_timeout = 120;   // seconds a request may wait for its result
 
-    int32_t     batch_size      = 8;     // max lines per group handed to the engine
+    int32_t     batch_size      = 16;    // max lines per batched decode. 16 measured best on the M1,
+                                         // CPU and Metal (Metal has a slow kernel band near 8; see BATCH.md)
     int32_t     batch_wait_ms   = 5;     // how long the worker waits to fill a batch
     int32_t     max_queue       = 1024;  // lines waiting; beyond this -> 503
     int32_t     max_lines       = 64;    // lines per request
@@ -76,6 +77,8 @@ struct model_params {
     bool        use_mmap       = true;
     bool        verbose        = false;  // -v: log each line's src/out ids to stderr, like nllb-cli -v
     bool        cancel_hook    = true;   // on_token hook that stops abandoned lines; --no-cancel-hook
+    int32_t     batch_size     = 16;     // copied from server_params::batch_size
+    int32_t     batch_tokens   = 2048;   // --batch-tokens: padded source tokens per batched call
 };
 
 static void print_usage(const char * argv0, const server_params & sp, const model_params & mp) {
@@ -94,7 +97,8 @@ static void print_usage(const char * argv0, const server_params & sp, const mode
     fprintf(stderr, "       --http-threads N      connection threads      [%d]\n", sp.http_threads);
     fprintf(stderr, "       --request-timeout S   max wait per request    [%d]\n", sp.request_timeout);
     fprintf(stderr, "batching:\n");
-    fprintf(stderr, "  -b,  --batch-size N        lines per group (1 = no grouping) [%d]\n", sp.batch_size);
+    fprintf(stderr, "       --batch N             lines per batched decode (1 = off)  [%d]\n", sp.batch_size);
+    fprintf(stderr, "       --batch-tokens N      padded source tokens per batch      [%d]\n", mp.batch_tokens);
     fprintf(stderr, "       --batch-wait-ms N     wait to fill a batch             [%d]\n", sp.batch_wait_ms);
     fprintf(stderr, "       --max-queue N         queued lines before 503          [%d]\n", sp.max_queue);
     fprintf(stderr, "       --max-lines N         lines per request                [%d]\n", sp.max_lines);
@@ -120,7 +124,12 @@ static bool parse_args(int argc, char ** argv, server_params & sp, model_params 
         else if (              a == "--port")           { sp.port           = std::stoi(next()); }
         else if (              a == "--http-threads")   { sp.http_threads   = std::stoi(next()); }
         else if (              a == "--request-timeout"){ sp.request_timeout= std::stoi(next()); }
-        else if (a == "-b"  || a == "--batch-size")     { sp.batch_size     = std::stoi(next()); }
+        else if (a == "--batch" || a == "--batch-size") { sp.batch_size     = std::stoi(next()); }
+        else if (              a == "--batch-tokens")   { mp.batch_tokens   = std::stoi(next()); }
+        else if (a == "-b") {
+            fprintf(stderr, "error: -b is ambiguous (nllb-cli uses it for --backend); use --batch N or --backend NAME\n");
+            exit(1);
+        }
         else if (              a == "--batch-wait-ms")  { sp.batch_wait_ms  = std::stoi(next()); }
         else if (              a == "--max-queue")      { sp.max_queue      = std::stoi(next()); }
         else if (              a == "--max-lines")      { sp.max_lines      = std::stoi(next()); }
@@ -128,6 +137,7 @@ static bool parse_args(int argc, char ** argv, server_params & sp, model_params 
         else { fprintf(stderr, "error: unknown argument '%s'\n", a.c_str()); return false; }
     }
     if (mp.model.empty()) { fprintf(stderr, "error: -m MODEL.gguf is required\n"); return false; }
+    mp.batch_size = sp.batch_size;
     if (sp.batch_size < 1 || sp.max_queue < 1 || sp.max_lines < 1 || mp.n_threads < 1) {
         fprintf(stderr, "error: sizes and thread counts must be >= 1\n");
         return false;
@@ -213,9 +223,7 @@ struct engine {
         return model.backend_name + (model.weights_host_ptr ? " (zero-copy)" : "");
     }
 
-    // false until nllb_generate_batch exists; main() prints it so nobody
-    // benchmarks -b 8 and wonders why it equals -b 1.
-    bool batched() const { return false; }
+    bool batched() const { return true; }
 
     static const char * stop_str(int32_t s) {
         switch (s) {
@@ -232,59 +240,104 @@ struct engine {
         return !(abandoned && abandoned->load(std::memory_order_relaxed));
     }
 
-    // One group from the queue. Today each row runs through nllb_generate on its
-    // own; the group is still useful (one wake-up, one stats entry, and the place
-    // the batch call goes). THIS LOOP IS THE BATCHING HOOK: when the step-11
-    // branch lands, tokenize every row first, then hand all of them to
-    // nllb_generate_batch with a per-row forced_bos vector - rows may mix
-    // src/tgt pairs, because src is inside each row's ids and tgt is per row.
+    // The batched path's hook: user is the group's vector of abandoned flags.
+    static bool keep_going_row(int row, int32_t /*token*/, void * user) {
+        const auto * flags = static_cast<const std::vector<const std::atomic<bool> *> *>(user);
+        const std::atomic<bool> * a = (*flags)[(size_t) row];
+        return !(a && a->load(std::memory_order_relaxed));
+    }
+
+    void finish(const std::vector<int32_t> & src_ids, const nllb_generate_result & gen,
+                row_out & o, const model_params & mp, const char * path) {
+        // skip_special drops decoder start, forced target code and eos.
+        o.ok       = true;
+        o.text     = nllb_vocab_decode(vocab, gen.ids, /*skip_special=*/true);
+        o.n_tokens = gen.ids.empty() ? 0 : (int32_t) gen.ids.size() - 1;
+        o.stop     = stop_str(gen.stop);
+        if (mp.verbose) {
+            // Same "src ids (N): ..." / "out ids (N): ..." format as nllb-cli -v,
+            // so the two logs can be compared with grep | sort | uniq -c.
+            static uint64_t seq = 0;
+            const std::string tag = "[" + std::to_string(seq++) + "] ";
+            std::string line = tag + "src ids (" + std::to_string(src_ids.size()) + "):";
+            for (int32_t id : src_ids) line += " " + std::to_string(id);
+            line += "\n" + tag + "out ids (" + std::to_string(gen.ids.size()) + "):";
+            for (int32_t id : gen.ids) line += " " + std::to_string(id);
+            line += "\n" + tag + "stop: " + o.stop + " (" + path + ")\n";
+            fputs(line.c_str(), stderr);
+        }
+    }
+
+    // One group from the queue (at most -b/--batch lines).
+    //   1 row, or --batch 1:  nllb_generate, exactly nllb-cli's path.
+    //   several rows:         planned by length and --batch-tokens, then ONE
+    //                         nllb_generate_batch per planned group. Rows may mix
+    //                         language pairs: src is inside each row's ids, tgt is
+    //                         the per-row forced token.
     void translate(const std::vector<row_in> & in, std::vector<row_out> & out, const model_params & mp) {
         out.assign(in.size(), {});
-        for (size_t i = 0; i < in.size(); i++) {
-            const row_in & r = in[i];
-            row_out      & o = out[i];
-            std::string err;
 
-            std::vector<int32_t> src_ids;
-            if (!nllb_vocab_encode(vocab, r.text, r.src, src_ids, err)) {
-                o.error = "tokenize: " + err;
+        // tokenize every row first; a row that fails gets its error and stays out
+        std::vector<std::vector<int32_t>> src(in.size());
+        std::vector<int32_t> tgt(in.size(), -1);
+        std::vector<int32_t> live, lens;
+        for (size_t i = 0; i < in.size(); i++) {
+            std::string err;
+            if (!nllb_vocab_encode(vocab, in[i].text, in[i].src, src[i], err)) {
+                out[i].error = "tokenize: " + err;
                 continue;
             }
             // Validated by the HTTP thread already; re-checked because -1 here
             // means "force nothing" and would translate into an arbitrary language.
-            const int32_t tgt_id = nllb_vocab_lang_id(vocab, r.tgt);
-            if (tgt_id < 0) { o.error = "unknown target language " + r.tgt; continue; }
+            tgt[i] = nllb_vocab_lang_id(vocab, in[i].tgt);
+            if (tgt[i] < 0) { out[i].error = "unknown target language " + in[i].tgt; continue; }
+            live.push_back((int32_t) i);
+            lens.push_back((int32_t) src[i].size());
+        }
 
-            nllb_generate_params gp;
-            gp.max_new_tokens = mp.max_new_tokens;
-            gp.forced_bos_id  = tgt_id;
-            gp.use_cache      = true;          // the library default is off; the product's is on
-            if (mp.cancel_hook) {
-                gp.on_token      = &engine::keep_going;
-                gp.on_token_user = const_cast<std::atomic<bool> *>(r.abandoned);
-            }
+        nllb_generate_params gp;
+        gp.max_new_tokens = mp.max_new_tokens;
+        gp.use_cache      = true;          // the library default is off; the product's is on
 
-            nllb_generate_result gen;
-            if (!nllb_generate(model, src_ids, gp, mp.n_threads, gen, err)) {
-                o.error = "generate: " + err;
+        const auto groups = nllb_plan_batches(lens, mp.batch_size, mp.batch_tokens);
+        for (const auto & g : groups) {
+            if (g.size() == 1) {
+                const size_t i = (size_t) live[g[0]];
+                nllb_generate_params p1 = gp;
+                p1.forced_bos_id = tgt[i];
+                if (mp.cancel_hook) {
+                    p1.on_token      = &engine::keep_going;
+                    p1.on_token_user = const_cast<std::atomic<bool> *>(in[i].abandoned);
+                }
+                nllb_generate_result gen;
+                std::string err;
+                if (!nllb_generate(model, src[i], p1, mp.n_threads, gen, err)) { out[i].error = "generate: " + err; continue; }
+                finish(src[i], gen, out[i], mp, "single");
                 continue;
             }
-            // skip_special drops decoder start, forced target code and eos.
-            o.ok       = true;
-            o.text     = nllb_vocab_decode(vocab, gen.ids, /*skip_special=*/true);
-            o.n_tokens = gen.ids.empty() ? 0 : (int32_t) gen.ids.size() - 1;
-            o.stop     = stop_str(gen.stop);
 
-            if (mp.verbose) {
-                // Same "src ids (N): ..." / "out ids (N): ..." format as nllb-cli -v,
-                // so the two logs can be compared with grep | sort | uniq -c.
-                static uint64_t seq = 0;
-                std::string line = "[" + std::to_string(seq++) + "] src ids (" + std::to_string(src_ids.size()) + "):";
-                for (int32_t id : src_ids) line += " " + std::to_string(id);
-                line += "\n[" + std::to_string(seq - 1) + "] out ids (" + std::to_string(gen.ids.size()) + "):";
-                for (int32_t id : gen.ids) line += " " + std::to_string(id);
-                line += std::string("\n[") + std::to_string(seq - 1) + "] stop: " + o.stop + "\n";
-                fputs(line.c_str(), stderr);
+            std::vector<std::vector<int32_t>> srcs;
+            std::vector<int32_t> forced;
+            std::vector<const std::atomic<bool> *> flags;
+            for (int32_t k : g) {
+                const size_t i = (size_t) live[k];
+                srcs.push_back(src[i]);
+                forced.push_back(tgt[i]);
+                flags.push_back(in[i].abandoned);
+            }
+            nllb_generate_batch_result r;
+            std::string err;
+            const bool ok = mp.cancel_hook
+                ? nllb_generate_batch(model, srcs, forced, gp, mp.n_threads, r, err, &engine::keep_going_row, &flags)
+                : nllb_generate_batch(model, srcs, forced, gp, mp.n_threads, r, err);
+            if (!ok) {
+                for (int32_t k : g) out[(size_t) live[k]].error = "generate (batch): " + err;
+                continue;
+            }
+            const std::string path = "batch of " + std::to_string(g.size());
+            for (size_t j = 0; j < g.size(); ++j) {
+                const size_t i = (size_t) live[g[j]];
+                finish(src[i], r.seq[j], out[i], mp, path.c_str());
             }
         }
     }
@@ -635,8 +688,9 @@ int main(int argc, char ** argv) {
     std::signal(SIGINT,  on_signal);
     std::signal(SIGTERM, on_signal);
 
-    fprintf(stderr, "batch:   up to %d lines per group, %d ms wait%s\n", sp.batch_size, sp.batch_wait_ms,
-            eng.batched() ? "" : " (rows run one at a time: no batched generate in this build)");
+    fprintf(stderr, "batch:   up to %d lines per decode, %d padded tokens, %d ms wait%s\n",
+            sp.batch_size, mp.batch_tokens, sp.batch_wait_ms,
+            sp.batch_size > 1 ? "" : " (batching off: one line at a time)");
     fprintf(stderr, "listen:  http://%s:%d\n", sp.hostname.c_str(), sp.port);
 
     svr.listen_after_bind();   // returns after svr.stop()
