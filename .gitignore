@@ -3,9 +3,16 @@
 __pycache__/
 *.pyc
 
-# model weights + converted GGUF — regenerate with tools/convert_nllb_to_gguf.py
-models/
+# model weights + converted GGUF — download with models/download-nllb-model.sh
+# or regenerate with tools/convert_nllb_to_gguf.py. The download scripts and
+# models/README.md are the only tracked files in models/.
+models/*
+!models/download-nllb-model.sh
+!models/download-nllb-model.ps1
+!models/README.md
 *.gguf
+*.gguf.part
+dist/
 *.safetensors
 *.bin
 

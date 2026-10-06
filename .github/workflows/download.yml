@@ -1,0 +1,136 @@
+# The model download scripts. Two jobs:
+#
+#   scripts  every push. shellcheck, then the real scripts against a LOCAL
+#            server (NLLB_BASE_URL) with fake files: happy path, already up to
+#            date, resume, a stale .part, a corrupted local file, a tampered
+#            upload, a missing entry. No network to huggingface.co, so this
+#            never goes red because the Hub is down.
+#   live     weekly + on demand, and only once the files are published (set the
+#            repo variable NLLB_MODELS_PUBLISHED=true). Fetches SHA256SUMS and
+#            HEADs every file it names - catches a deleted or renamed upload
+#            without downloading 4.7 GB.
+
+name: download
+
+on:
+  push:
+    paths: ['models/download-nllb-model.*', '.github/workflows/download.yml']
+  pull_request:
+    paths: ['models/download-nllb-model.*', '.github/workflows/download.yml']
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  scripts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck -S warning models/download-nllb-model.sh tools/publish_models.sh
+
+      - name: fake model files (served with byte ranges, like the Hub)
+        run: |
+          pip install rangehttpserver
+          mkdir srv
+          python - <<'PY'
+          import os
+          for name, n in [("nllb-600M-f16.gguf", 3_000_000), ("nllb-600M-q8emb.gguf", 500_000)]:
+              open(f"srv/{name}", "wb").write(os.urandom(n))
+          PY
+          python - <<'PY'
+          import hashlib, pathlib
+          lines = [f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}"
+                   for p in sorted(pathlib.Path("srv").glob("*.gguf"))]
+          pathlib.Path("srv/SHA256SUMS").write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: bash script
+        if: runner.os != 'Windows'
+        env:
+          NLLB_BASE_URL: http://127.0.0.1:8766
+        run: |
+          (cd srv && exec python -m RangeHTTPServer 8766 >/dev/null 2>&1) &
+          trap 'kill %1' EXIT
+          sleep 2
+          set -x
+          S=models/download-nllb-model.sh
+          same() { cmp "dl/$1" "srv/$1"; }
+
+          $S f16 dl && same nllb-600M-f16.gguf                         # happy
+          $S f16 dl > out.txt && grep -q "already up to date" out.txt  # idempotent
+
+          rm dl/nllb-600M-f16.gguf                                     # resume
+          head -c 1000000 srv/nllb-600M-f16.gguf > dl/nllb-600M-f16.gguf.part
+          $S f16 dl && same nllb-600M-f16.gguf
+
+          head -c 2000000 /dev/urandom > dl/nllb-600M-q8emb.gguf.part  # stale .part
+          $S q8emb dl && same nllb-600M-q8emb.gguf
+
+          printf X | dd of=dl/nllb-600M-f16.gguf bs=1 seek=100 conv=notrunc   # corrupted local
+          $S f16 dl && same nllb-600M-f16.gguf
+
+          echo junk >> srv/nllb-600M-q8emb.gguf; rm dl/nllb-600M-q8emb.gguf   # tampered upload
+          if $S q8emb dl; then echo "accepted a tampered file"; exit 1; fi
+          test ! -e dl/nllb-600M-q8emb.gguf && test ! -e dl/nllb-600M-q8emb.gguf.part
+
+          if $S f32 dl; then echo "f32 is not in SHA256SUMS"; exit 1; fi    # missing entry
+          set +e; $S nope dl; rc=$?; set -e; test "$rc" = 2                  # usage error
+
+      - name: PowerShell script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NLLB_BASE_URL: http://127.0.0.1:8766
+        run: |
+          $srv = Start-Process python -ArgumentList "-m", "RangeHTTPServer", "8766" -WorkingDirectory srv -PassThru -WindowStyle Hidden
+          Start-Sleep 2
+          $S = ".\models\download-nllb-model.ps1"
+          function Same($f) { (Get-FileHash "dl\$f").Hash -eq (Get-FileHash "srv\$f").Hash }
+
+          & $S f16 dl;   if (-not (Same "nllb-600M-f16.gguf")) { throw "happy" }
+          $o = & $S f16 dl 6>&1 | Out-String
+          if ($o -notmatch "already up to date") { throw "idempotent" }
+
+          Remove-Item dl\nllb-600M-f16.gguf
+          $head = [byte[]]([IO.File]::ReadAllBytes("$PWD\srv\nllb-600M-f16.gguf")[0..999999])
+          [IO.File]::WriteAllBytes("$PWD\dl\nllb-600M-f16.gguf.part", $head)
+          & $S f16 dl;   if (-not (Same "nllb-600M-f16.gguf")) { throw "resume" }
+
+          Add-Content srv\nllb-600M-q8emb.gguf "junk"
+          & $S q8emb dl; if ($LASTEXITCODE -ne 1 -or (Test-Path dl\nllb-600M-q8emb.gguf)) { throw "accepted a tampered file" }
+
+          & $S f32 dl;   if ($LASTEXITCODE -ne 1) { throw "f32 is not in SHA256SUMS" }
+          Stop-Process $srv
+          exit 0
+
+  live:
+    if: vars.NLLB_MODELS_PUBLISHED == 'true' && github.event_name != 'push' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      REPO: ${{ vars.NLLB_HF_REPO || 'JaydeepGupta/nllb-200-distilled-600M-GGUF' }}
+      REV: ${{ vars.NLLB_HF_REV || 'main' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: every advertised file exists on the Hub
+        run: |
+          base="https://huggingface.co/${REPO}/resolve/${REV}"
+          curl -fsSL "$base/SHA256SUMS" | tee sums
+          grep -o 'nllb-600M-[a-z0-9]*\.gguf' models/download-nllb-model.sh | sort -u > advertised
+          awk '{print $2}' sums | sort -u > published
+          diff advertised published      # the script and the repo name the same files
+          while read -r f; do
+            curl -fsSIL "$base/$f" -o /dev/null && echo "ok  $f"
+          done < published

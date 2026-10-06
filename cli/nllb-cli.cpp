@@ -370,6 +370,22 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
+    // The most common first-run failure is not having a model at all. Say how
+    // to get one instead of the loader's bare "cannot open".
+    if (FILE * probe = std::fopen(model_path.c_str(), "rb")) {
+        std::fclose(probe);
+    } else {
+        std::fprintf(stderr,
+            "model not found: %s\n"
+            "\n"
+            "download a pre-converted one (checksum-verified):\n"
+            "  ./models/download-nllb-model.sh f16          # Linux / macOS\n"
+            "  .\\models\\download-nllb-model.ps1 f16         # Windows\n"
+            "or convert your own checkpoint: see MODELS.md\n",
+            model_path.c_str());
+        return 1;
+    }
+
     std::string err;
 
     // --list-langs never touches the weights. nllb_vocab_load opens the GGUF

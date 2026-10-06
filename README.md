@@ -3,10 +3,21 @@
 `facebook/nllb-200-distilled-600M` in C++ on ggml, in the spirit of
 whisper.cpp: one GGUF, no Python at runtime, no dependency but vendored ggml.
 
+## Quick start
+
 ```bash
+git clone --recursive https://github.com/Jaydeep505/nllb.cpp && cd nllb.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+
+./models/download-nllb-model.sh f16        # 1.24 GB, checksum-verified. Windows: .\models\download-nllb-model.ps1
+
 ./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
     --src eng_Latn --tgt deu_Latn "Hello, world!"
 ```
+
+Which file to pick (`f16`, `q8emb`, `f32`), mirrors, version pinning, the
+CC-BY-NC license on the weights, and how to convert your own checkpoint:
+`MODELS.md`.
 
 Encoder, decoder, greedy generation, the KV cache, f16 weights and the
 tokenizer are each verified against HuggingFace — see `DECODER.md`,
