@@ -6,10 +6,17 @@
   <img src="docs/images/nllb-cpp-banner.png" alt="nllb.cpp" width="800">
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Jaydeep505/nllb.cpp" alt="license"></a>
+  <a href="https://github.com/Jaydeep505/nllb.cpp/releases"><img src="https://img.shields.io/github/v/release/Jaydeep505/nllb.cpp" alt="release"></a>
+  <a href="https://github.com/Jaydeep505/nllb.cpp/actions/workflows/ci.yml"><img src="https://github.com/Jaydeep505/nllb.cpp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://huggingface.co/JaydeepGupta/nllb-200-distilled-600M-GGUF"><img src="https://img.shields.io/badge/%F0%9F%A4%97-models-yellow" alt="models"></a>
+</p>
+
 `facebook/nllb-200-distilled-600M` in C++ on ggml: one GGUF, no Python at runtime, no dependency but vendored ggml.
 
 High-performance inference of Meta's [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M)
-machine translation model (600M distilled), 200 languages, in the style of whisper.cpp:
+machine translation model (600M distilled):
 
 - Plain C/C++ implementation without dependencies (only the vendored [ggml](https://github.com/ggml-org/ggml))
 - Built-in tokenizer, so no Python or sentencepiece at runtime: one GGUF file is the whole model
@@ -101,7 +108,7 @@ cmake --build build -j --config Release
 
 ### On-device iOS app
 
-Offline translation on iPhone with `nllb.xcframework` (Metal) — see [`examples/nllb.swiftui`](examples/nllb.swiftui).
+Offline translation on iPhone 13 mini with `nllb.xcframework` (Metal) — see [`examples/nllb.swiftui`](examples/nllb.swiftui).
 
 https://github.com/user-attachments/assets/a1814c0a-a6c0-49da-b586-6ac41cbff86d
 
@@ -117,14 +124,13 @@ HTTP server on top of libnllb — see [`examples/server`](examples/server).
   <img src="examples/server/demo.gif" width="600" alt="nllb-server demo — click for full video">
 </a>
 
-
-
-
-
-
 https://github.com/user-attachments/assets/10956991-8eef-44c1-abfe-1db7902392de
 
+## Acknowledgements
 
+- [ggml](https://github.com/ggml-org/ggml) by Georgi Gerganov and contributors (MIT): the tensor library nllb.cpp runs on
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp): the project structure this repo follows
+- [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M) by Meta AI: the model (weights licensed CC-BY-NC 4.0)
 
 
 
