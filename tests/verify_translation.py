@@ -7,7 +7,7 @@ HuggingFace's translations, string for string.
         models/nllb-600M-f16.gguf ref/ -t 8
 
 Needs no torch and no HuggingFace: the goldens are a text file written by
-tools/dump_translation_reference.py.
+scripts/dump_translation_reference.py.
 
 WHY A SUBPROCESS AND NOT A C++ GATE. The claim being tested is "typing a
 sentence prints the right translation", and that claim is about the binary's
@@ -32,7 +32,7 @@ FOUR PASSES, because they have different blind spots:
             other than what was asked for.
 
 A MISSING GOLDEN FILE IS A FAILURE, not a skip - see the step-4 lesson in
-claude/handoff.md, where a SKIP that was not a FAIL meant deleting eight of
+docs/dev/handoff.md, where a SKIP that was not a FAIL meant deleting eight of
 nine goldens still printed PASS. Use --no-golden / --no-stdin / --no-wiring /
 --no-errors to leave a pass out on purpose.
 
@@ -52,7 +52,7 @@ state a DIFFERENT claim and make the operator ask for it by name:
                        corpus.
 
 Without the flag nothing changes: byte equality, and every f32/f16 result in
-claude/handoff.md reproduces. The flag exists so that a green line always names
+docs/dev/handoff.md reproduces. The flag exists so that a green line always names
 the claim it is green about - "identical to HF" and "close to HF" are different
 products and a log six months old cannot tell them apart otherwise.
 
@@ -206,7 +206,7 @@ def load_goldens(path: Path):
         raise SystemExit(
             f"no {path}\n"
             f"  Dump it first (this is the only step that needs torch):\n"
-            f"    python tools/dump_translation_reference.py <snapshot> "
+            f"    python scripts/dump_translation_reference.py <snapshot> "
             f"--out {path.parent}/ --tgt-lang deu_Latn --max-new-tokens 64")
     header, cases = {}, []
     for line in path.read_text(encoding="utf-8").splitlines():

@@ -39,7 +39,7 @@ jobs:
 
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck -S warning models/download-nllb-model.sh tools/publish_models.sh
+        run: shellcheck -S warning models/download-nllb-model.sh scripts/publish-models.sh
 
       - name: fake model files (served with byte ranges, like the Hub)
         run: |

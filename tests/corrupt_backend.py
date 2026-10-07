@@ -9,10 +9,10 @@ through the backend, a causal mask that is now DATA rather than an op. Each
 mutation below is one of those, written the way it would plausibly be written.
 
     python tests/corrupt_backend.py build models/small-f32.gguf ref-small/
-    NLLB_BACKEND=vulkan0 python tests/corrupt_backend.py build ...   # a device
+    NLLB_BACKEND=cuda0 python tests/corrupt_backend.py build ...   # a device
 
 Compiles each mutated src/nllb.cpp into /tmp (never touching your tree) with
-tests/test_cache.cpp and tests/dump_states.cpp, then runs two instruments:
+tests/test-cache.cpp and tests/dump-states.cpp, then runs two instruments:
 
   cache  nllb-test-cache: cached vs un-cached, [full] [step] [chunk] [arena]
   dump   nllb-dump-states --diff against the UNMUTATED source built the same way
@@ -134,9 +134,9 @@ def build(tmp: Path, build_dir: Path, src_text: str, tag: str) -> tuple[Path, Pa
     d = tmp / tag
     d.mkdir()
     (d / "nllb.cpp").write_text(src_text)
-    shutil.copy(ROOT / "src/nllb.h", d / "nllb.h")
+    shutil.copy(ROOT / "include/nllb.h", d / "nllb.h")
     common = ["g++", "-std=c++17", "-O2", "-w", f"-I{d}",
-              f"-I{ROOT / 'vendor/ggml/include'}"]
+              f"-I{ROOT / 'ggml/include'}"]
     libs = [f"-L{lib}", "-lggml", "-lggml-base", "-lggml-cpu", f"-Wl,-rpath,{lib}"]
     obj = d / "nllb.o"
     r = subprocess.run(common + ["-c", str(d / "nllb.cpp"), "-o", str(obj)],
@@ -146,7 +146,7 @@ def build(tmp: Path, build_dir: Path, src_text: str, tag: str) -> tuple[Path, Pa
         # A mutation that does not compile is a broken HARNESS, not a caught bug.
         sys.exit(f"compile of {tag} failed - fix the mutation, do not count it")
     outs = []
-    for name, src in (("cache", "tests/test_cache.cpp"), ("dump", "tests/dump_states.cpp")):
+    for name, src in (("cache", "tests/test-cache.cpp"), ("dump", "tests/dump-states.cpp")):
         exe = d / name
         r = subprocess.run(common + ["-o", str(exe), str(ROOT / src), str(obj)] + libs,
                            capture_output=True, text=True)

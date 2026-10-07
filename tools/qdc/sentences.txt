@@ -1,9 +1,0 @@
-Hello, world!
-The quick brown fox jumps over the lazy dog.
-Machine translation on a laptop GPU should give the same words as on the CPU.
-The committee will publish its report on Tuesday, after the vote.
-Please restart the device before installing the new driver.
-Prices for petrol and diesel rose sharply over the weekend.
-She said that the museum would reopen in the spring.
-How many languages does this model support?
-Two hundred languages, one small binary, no Python at runtime.

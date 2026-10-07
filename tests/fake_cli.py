@@ -19,7 +19,7 @@ are - which is exactly where a broken gate is least likely to be noticed.
     python tests/fake_cli.py --matrix ref-fake/
 
 Every breakage below is a mistake the real CLI could plausibly make, and each
-is one of the failure modes claude/handoff.md predicted for step 9 - the ones
+is one of the failure modes docs/dev/handoff.md predicted for step 9 - the ones
 no existing gate can see, because every other gate in this repo stops at ids.
 """
 
@@ -46,7 +46,7 @@ BREAKAGES = {
 }
 
 # Synthetic goldens: the shape of the real thing, none of the weight. The
-# sources are the nine prompt names from tools/dump_reference.py so the file
+# sources are the nine prompt names from scripts/dump_reference.py so the file
 # reads like the real one; the translations are invented.
 FAKE = [
     ("00_hello_world", "Hello, world!", "Hallo, Welt!"),

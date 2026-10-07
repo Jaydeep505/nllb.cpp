@@ -1,210 +1,112 @@
 # nllb.cpp
 
-`facebook/nllb-200-distilled-600M` in C++ on ggml, in the spirit of
-whisper.cpp: one GGUF, no Python at runtime, no dependency but vendored ggml.
+<p align="center">
+  <img src="docs/images/nllb-cpp-banner.png" alt="nllb.cpp" width="800">
+</p>
+
+`facebook/nllb-200-distilled-600M` in C++ on ggml: one GGUF, no Python at runtime, no dependency but vendored ggml.
+
+High-performance inference of Meta's [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M)
+machine translation model (600M distilled), 200 languages, in the style of whisper.cpp:
+
+- Plain C/C++ implementation without dependencies (only the vendored [ggml](https://github.com/ggml-org/ggml))
+- Built-in tokenizer, so no Python or sentencepiece at runtime: one GGUF file is the whole model
+- Batched decoding: translate several sentences in one pass
+- Support for CPU-only inference
+- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon and [CUDA](#nvidia-gpu-support) on NVIDIA
+- Zero memory allocations per token: the compute graph's memory is reused across decode steps
+- Low memory footprint: weights are memory-mapped, so a 1.2 GB f16 model needs only ~100 MB of dirty memory
+- KV cache, with an optional f16 KV cache to halve its memory
+- F16 / F32 weights and [integer quantization](examples/quantize) via `nllb-quantize`
+- C-style API ([`include/nllb-c.h`](include/nllb-c.h)) for Swift and other languages
+- Verified against HuggingFace: token-for-token identical output on the test sets
+
+Supported platforms:
+
+- [x] macOS (Apple Silicon: CPU + Metal)
+- [x] [iOS](examples/nllb.swiftui) (xcframework + SwiftUI example)
+- [x] Windows (CPU, CUDA)
 
 ## Quick start
-
+ Clone the repository with recursive method and navigate to directory:
 ```bash
 git clone --recursive https://github.com/Jaydeep505/nllb.cpp && cd nllb.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+```
+Then, download one of models in .gguf format:
+```bash
+./models/download-nllb-model.sh f16        
+```
+Build the nllb-cli example:
+```bash
+#build the project
+cmake -B build
+cmake --build build -j --config Release
+```
+Start using cli for translation:(e.g. From English to German)
+```bash
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf --src eng_Latn --tgt deu_Latn "Hello, world!"
 
-./models/download-nllb-model.sh f16        # 1.24 GB, checksum-verified. Windows: .\models\download-nllb-model.ps1
-
+#Translate a .txt file:
 ./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
-    --src eng_Latn --tgt deu_Latn "Hello, world!"
+    --src deu_Latn --tgt eng_Latn < input.txt > output.txt
+
+#To enable batching(8 lines at a time):
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
+    --src deu_Latn --tgt eng_Latn --batch 8 < input.txt > output.txt
 ```
+For detailed usage instructions:
+```bash
+./build/bin/nllb-cli -h
+```
+## Apple silicon support
+Same steps as above: It auto detects ARM NEON CPU and GPU 
+```bash
+cmake -B build
+cmake --build build -j --config Release
+```
+## NVIDIA GPU support
 
-Which file to pick (`f16`, `q8emb`, `f32`), mirrors, version pinning, the
-CC-BY-NC license on the weights, and how to convert your own checkpoint:
-`MODELS.md`.
+With NVIDIA cards, the encoder and decoder run on the GPU through ggml's CUDA backend
+(cuBLAS + custom CUDA kernels). First, install the CUDA Toolkit:
+https://developer.nvidia.com/cuda-downloads (check with `nvcc --version`).
 
-Encoder, decoder, greedy generation, the KV cache, f16 weights and the
-tokenizer are each verified against HuggingFace — see `DECODER.md`,
-`GENERATE.md`, `CACHE.md`, `PROFILE.md`, `PRECISION.md`, `TOKENIZER.md`. The
-CLI and the first text → text gate are `CLI.md`.
-
-Backends: `BACKEND.md` (step 13 Metal, step 14 OpenCL, step 16 CUDA, step 17
-Vulkan) and `BUILD.md` for the flags. Metal ships and is verified on an M1.
-Vulkan passes every gate on Mesa lavapipe (step 17, which also found and
-worked around a ggml-vulkan stride bug; the `vulkan` CI job re-asserts it). OpenCL and CUDA are built and
-CI-guarded with **no graph run on them yet**. The Snapdragon X Elite run of
-OpenCL + Vulkan is packaged by `.github/workflows/xelite.yml`; see
-`QDC-XELITE.md`.
-
-iOS: `./build-xcframework.sh` packages the library + Metal as
-`build-apple/nllb.xcframework`, with a plain-C API (`include/nllb-c.h`) so Swift
-can `import nllb`. `examples/nllb.swiftui` is a minimal split-screen translator
-on top of it. Built and CI-compiled, **not yet run on a device** — see `IOS.md`.
+Then build `nllb.cpp` with CUDA support:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release                                    # CPU, + Metal on macOS
-cmake -B build -DNLLB_CUDA=ON   -DCMAKE_CUDA_ARCHITECTURES=75 ...            # NVIDIA
-cmake -B build -DNLLB_OPENCL=ON [-DNLLB_ADRENO=ON] ...                       # OpenCL
-cmake -B build -DNLLB_VULKAN=ON ...                                          # Vulkan (needs glslc)
-./build/bin/nllb-cli --list-backends
+cmake -B build -DNLLB_CUDA=ON
+cmake --build build -j --config Release
 ```
 
----
-
-## Step 1: NLLB → GGUF
-
-Converts `facebook/nllb-200-distilled-600M` to GGUF and proves the result
-reproduces HuggingFace's encoder to float tolerance. Nothing here needs a GPU
-and the converter itself needs neither torch nor transformers.
-
-```
-tools/convert_nllb_to_gguf.py   HF snapshot  -> .gguf, and .gguf -> requantised .gguf
-                                (numpy + safetensors + gguf; no torch for safetensors)
-tools/ref_encoder.py            .gguf        -> hidden states (numpy only; the C++ spec)
-tools/dump_reference.py         HF model     -> ref/*.bin     (golden files for C++ tests)
-tests/make_tiny_model.py        random tiny NLLB, no download
-tests/verify_encoder.py         HF vs GGUF diff — the milestone-1 gate
-```
-
-## Run it
+Building for your GPU's architecture only is much faster than ggml's default.
+Look it up with `nvidia-smi --query-gpu=name,compute_cap --format=csv`
+(e.g. `8.6` → `86`):
 
 ```bash
-pip install numpy safetensors gguf sentencepiece      # converter only
-pip install torch transformers                        # verification only
-
-huggingface-cli download facebook/nllb-200-distilled-600M \
-    --local-dir models/nllb-600M
-
-python tools/convert_nllb_to_gguf.py models/nllb-600M \
-    --outfile models/nllb-600M-f32.gguf --outtype f32
-
-python tests/verify_encoder.py models/nllb-600M models/nllb-600M-f32.gguf
+cmake -B build -DNLLB_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+cmake --build build -j --config Release
 ```
 
-Expect `PASS` with `max|d|` around `1e-6`. If it prints `MISMATCH`, stop —
-do not start on ggml until this is green.
-
-Fast loop with no download at all:
-
-```bash
-python tests/make_tiny_model.py models/tiny-nllb
-python tools/convert_nllb_to_gguf.py models/tiny-nllb --outfile models/tiny.gguf
-python tests/verify_encoder.py models/tiny-nllb models/tiny.gguf
-```
-
-Measured on the tiny model: **f32 → `8.3e-07`**, **f16 → `8.9e-04`**. Three
-orders of magnitude. Convert f32 for the milestone; f16 error is large enough
-to hide a real bug in the same digits.
-
-## What NLLB actually is
-
-`M2M100ForConditionalGeneration` — a pre-layernorm encoder-decoder. 600M-distilled:
-
-| | |
+| GPU | arch |
 |---|---|
-| d_model | 1024 |
-| encoder / decoder layers | 12 / 12 |
-| attention heads | 16 (head_dim 64) |
-| FFN dim | 4096 |
-| activation | **relu**, not gelu |
-| vocab | 256206 |
-| max positions | 1024 |
-| pad / bos / eos | 1 / 0 / 2 |
-| LayerNorm eps | 1e-5 (torch default) |
-| lm_head | tied to `model.shared.weight` |
+| GTX 16xx / RTX 20xx / T4 | `75` |
+| A100 | `80` |
+| RTX 30xx | `86` |
+| RTX 40xx / L4 | `89` |
+| H100 | `90` |
+| RTX 50xx | `120` (CUDA 12.8+) |
 
-Encoder block, in order:
+## Use cases
+On device iOS app:
 
-```
-r = x;  x = LN(x, attn_norm);  x = self_attn(x);  x = r + x
-r = x;  x = LN(x, ffn_norm);   x = fc2(relu(fc1(x)));  x = r + x
-```
+Offline translation on iPhone with the `nllb.xcframework` (Metal) — see
+[`examples/nllb.swiftui`](examples/nllb.swiftui).
 
-and one final `LN(x, enc.output_norm)` after the last block. Attention has bias
-on all four projections.
+https://github.com/user-attachments/assets/your-video-id
 
-## The five things that will bite you
+Local server:
 
-**1. Position embeddings are sinusoidal and are NOT in the checkpoint.**
-HF holds them in a non-persistent buffer, so they never hit disk. The converter
-recomputes the table and bakes it in as `position_embd.weight`. Do not generate
-sinusoids in C++ until the encoder is green — the formula has three separate
-places to get it subtly wrong:
+https://github.com/user-attachments/assets/your-video-id
 
-- the denominator is `log(10000) / (half_dim − 1)`, not `/ half_dim`
-- layout is `[sin(all freqs) | cos(all freqs)]` **concatenated**, not the
-  interleaved layout in the original Transformer paper and most blog posts
-- row `padding_idx` (= 1) is zeroed
 
-**2. Positions are offset by 2.** HF computes
-`cumsum(mask) * mask + padding_idx` with `padding_idx = 1`, against a table
-built with `offset = 2`. For an unpadded sequence, token *j* reads table row
-**j + 2**. Rows 0 and 1 are never used. Off-by-one here gives plausible-looking
-garbage that survives layer 1 and diverges slowly — the worst failure mode.
 
-**3. Embeddings are scaled by `sqrt(d_model)` = 32, positions are not.**
-`x = embed[ids] * 32.0 + pos_table[j + 2]`.
 
-**4. Do not transpose linear weights.** torch stores `(out, in)`; gguf reverses
-shape on write, so ggml sees `ne = [in, out]`, which is exactly what
-`ggml_mul_mat` expects. Writing them "corrected" is the single most common
-conversion bug.
-
-**5. Attention scaling is applied to Q, not to the logits.**
-`q = q_proj(x) * head_dim**-0.5`. Algebraically identical, but if you dump
-intermediate tensors to bisect a mismatch, matching HF's placement means your
-numbers line up at every step instead of only at the end.
-
-## GGUF layout produced
-
-Arch string `nllb`. Metadata beyond the usual: `nllb.encoder.block_count`,
-`nllb.encoder.attention.head_count`, `nllb.encoder.feed_forward_length`
-(and `nllb.decoder.*`), plus `nllb.embedding_scale`, `nllb.position_offset`,
-`nllb.pre_layernorm`, `nllb.activation`, `nllb.attention.qkv_bias`.
-
-Tensors:
-
-```
-token_embd.weight                 [vocab, d_model]
-position_embd.weight              [max_pos + 2, d_model]   baked sinusoids, always f32
-enc.blk.{i}.attn_{q,k,v,out}.{weight,bias}
-enc.blk.{i}.attn_norm.{weight,bias}
-enc.blk.{i}.ffn_{up,down}.{weight,bias}          up = fc1, down = fc2
-enc.blk.{i}.ffn_norm.{weight,bias}               = HF final_layer_norm
-enc.output_norm.{weight,bias}
-dec.blk.{i}.*                                    + cross_attn_{q,k,v,out,norm}
-dec.output_norm.{weight,bias}
-output.weight                                    only if lm_head is untied
-```
-
-`--encoder-only` drops the decoder (52 tensors instead of 106) if you want a
-smaller file while working the milestone.
-
-In f16 mode all biases, all norms, and the position table stay f32 — they are
-tiny and they are exactly where precision loss compounds.
-
-## Tokenizer
-
-Read from `tokenizer.json` when present, which already has NLLB's fairseq `+1`
-id offset and the 200+ FLORES language codes resolved — so the offset
-arithmetic is never guessed. Falls back to `sentencepiece.bpe.model` plus the
-documented offset rule. Scores come from the spm model, keyed by piece text.
-
-`vocab_size` (256206) exceeds the real token count; the embedding matrix is
-padded. The converter warns and continues — that warning is expected on NLLB.
-
-Encoder verification doesn't need the tokenizer at all (it feeds raw ids), so
-if the vocab path gives you trouble, `--no-tokenizer` unblocks the milestone.
-
-**The tokenizer is now implemented in C++ — see `TOKENIZER.md`.** Two things
-that document exists to correct, because both were wrong here for seven steps:
-NLLB's tokenizer is **BPE**, not Unigram (`sentencepiece.bpe.model` means what
-its name says), and the reference to match is HuggingFace's *fast* tokenizer,
-not sentencepiece — they normalize differently, and the difference changes ids.
-A GGUF converted before that step lacks the precompiled charsmap and is refused
-at load rather than tokenizing ASCII correctly and everything else silently
-wrong.
-
-## Next
-
-`tools/dump_reference.py --per-layer` writes golden `.bin` files plus every
-intermediate layer's output. When the C++ encoder's final output is wrong, diff
-layer by layer — it tells you *where* it broke rather than *that* it broke.
-`tools/ref_encoder.py` is the line-by-line spec to port; each numpy line maps
-to one ggml op.

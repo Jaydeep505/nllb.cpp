@@ -7,7 +7,7 @@ against each other, so the weights cancel - and it is what lets step 10's
 plumbing be exercised in a sandbox with no checkpoint. What it has never had is
 a ref/ directory: every gate reads `manifest_gen.txt` and `<name>.ids.bin` for
 its source ids and generation settings, and those come from
-tools/dump_decoder_reference.py, which needs torch and the real model.
+scripts/dump_decoder_reference.py, which needs torch and the real model.
 
 This writes that much and nothing more:
 

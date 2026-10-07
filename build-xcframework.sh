@@ -3,7 +3,7 @@
 # build-xcframework.sh - package libnllb + ggml (Metal) as nllb.xcframework.
 #
 # Modeled on whisper.cpp's script of the same name. Differences, all deliberate:
-#   * ggml lives at vendor/ggml, so its static libraries are FOUND by name
+#   * libnllb.a and ggml's static libraries are FOUND by name
 #     under each build directory rather than hard-coded by path;
 #   * the framework exports ONE header, include/nllb-c.h. nllb.h is C++ and Swift
 #     cannot import it; the C facade is the whole app-facing API;
@@ -13,7 +13,7 @@
 #     came out without ggml's symbols on the first real run; nothing here
 #     targets an Intel Mac, so they are dropped rather than debugged.
 #   * GGML_BLAS=OFF: nllb schedules the primary device + the CPU and never the
-#     BLAS backend (BACKEND.md), so linking it only adds size. The CPU backend
+#     BLAS backend (docs/backend.md), so linking it only adds size. The CPU backend
 #     still uses Accelerate's vDSP (GGML_ACCELERATE, on by default).
 #
 # Usage (macOS, Xcode + CMake):
@@ -52,7 +52,8 @@ COMMON_CMAKE_ARGS=(
     -DCMAKE_XCODE_ATTRIBUTE_STRIP_INSTALLED_PRODUCT=NO
     -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=ggml
     -DBUILD_SHARED_LIBS=${BUILD_SHARED_LIBS}
-    -DNLLB_BUILD_TOOLS=OFF
+    -DNLLB_BUILD_EXAMPLES=OFF
+    -DNLLB_BUILD_TESTS=OFF
     -DGGML_METAL=${GGML_METAL}
     -DGGML_METAL_EMBED_LIBRARY=${GGML_METAL_EMBED_LIBRARY}
     -DGGML_METAL_USE_BF16=${GGML_METAL_USE_BF16}
@@ -85,9 +86,9 @@ check_required_tool "dsymutil" "Please install Xcode and Xcode Command Line Tool
 set -e
 
 # The upload/clone trap from the handoff: a `git archive` or a plain clone
-# leaves vendor/ggml EMPTY, and cmake's error about it is not obvious.
-if [ ! -f vendor/ggml/CMakeLists.txt ]; then
-    echo "Error: vendor/ggml is empty. Run: git submodule update --init --recursive"
+# leaves ggml EMPTY, and cmake's error about it is not obvious.
+if [ ! -f ggml/CMakeLists.txt ]; then
+    echo "Error: ggml is empty. Run: git submodule update --init --recursive"
     exit 1
 fi
 

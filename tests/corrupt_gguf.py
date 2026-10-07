@@ -19,7 +19,7 @@ attributed to the correct block.
 
 Writes in place, so work on a copy.
 
---mode quantize, AND WHY IT IS NOT THE SAME AS convert_nllb_to_gguf.py
+--mode quantize, AND WHY IT IS NOT THE SAME AS models/convert-nllb-to-gguf.py
 -----------------------------------------------------------------
 Step 10 replaces exact id equality with two new assertions - top-k agreement in
 nllb-test-precision and chrF in verify_translation.py - and trap 27 says a gate
@@ -27,7 +27,7 @@ whose sensitivity nobody has measured is not a gate. The other harnesses in this
 repo can break something on purpose and watch the red appear;  this is that tool
 for the quantisation-shaped failure.
 
-tools/convert_nllb_to_gguf.py cannot do this job, for two reasons:
+models/convert-nllb-to-gguf.py cannot do this job, for two reasons:
 
   * it changes the FILE's types, so the two files being compared differ in
     dtype as well as in content, and nllb-test-precision's own "both files
@@ -153,9 +153,9 @@ def main() -> int:
         # kill was then INVISIBLE, because the calling script piped this
         # program into `head` and `set -e` inspects only the last command of a
         # pipeline: the gate ran against an UNCORRUPTED file and printed PASS.
-        # Fourth member of the family in claude/handoff.md - a harness lying
+        # Fourth member of the family in docs/dev/handoff.md - a harness lying
         # toward green - and the cheapest fix for the harness is to check the
-        # exit code, which is now in tools/step10_measure.sh's probe section.
+        # exit code, which is now in scripts/step10-measure.sh's probe section.
         # Block quantisers work per row, so chunking rows changes no byte.
         CHUNK = 4096
         n_per = a.shape[-1]
@@ -171,7 +171,7 @@ def main() -> int:
                 packed = quants.quantize(src, qt)
             except NotImplementedError:
                 raise SystemExit(f"gguf-py cannot quantise to {args.qtype} - "
-                                 f"trap 33. Use the C++ tools/nllb-quantize "
+                                 f"trap 33. Use the C++ examples/quantize "
                                  f"for K-quants.")
             back = quants.dequantize(packed, qt).reshape(src.shape)
             d = np.abs(back.astype(np.float32) - src)

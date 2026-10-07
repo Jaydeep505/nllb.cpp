@@ -62,7 +62,7 @@ struct server_params {
     int32_t     request_timeout = 120;   // seconds a request may wait for its result
 
     int32_t     batch_size      = 16;    // max lines per batched decode. 16 measured best on the M1,
-                                         // CPU and Metal (Metal has a slow kernel band near 8; see BATCH.md)
+                                         // CPU and Metal (Metal has a slow kernel band near 8; see docs/batch.md)
     int32_t     batch_wait_ms   = 5;     // how long the worker waits to fill a batch
     int32_t     max_queue       = 1024;  // lines waiting; beyond this -> 503
     int32_t     max_lines       = 64;    // lines per request
