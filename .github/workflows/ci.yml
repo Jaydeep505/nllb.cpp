@@ -60,9 +60,9 @@ jobs:
           # --no-tokenizer: the tiny fixtures are random weights with no
           # tokenizer files, and the converter's post-write check (trap 32)
           # rightly refuses a file without one unless told it is on purpose.
-          python tools/convert_nllb_to_gguf.py models/tiny-nllb --no-tokenizer \
+          python models/convert-nllb-to-gguf.py models/tiny-nllb --no-tokenizer \
               --outfile models/tiny-f32.gguf --outtype f32
-          python tools/convert_nllb_to_gguf.py models/deep-nllb --no-tokenizer \
+          python models/convert-nllb-to-gguf.py models/deep-nllb --no-tokenizer \
               --outfile models/deep-f32.gguf --outtype f32
 
       - name: Dump goldens (4 fixtures)
@@ -70,21 +70,21 @@ jobs:
         # the decoder dumper reads ref/<name>.ids.bin back, so encoder and
         # decoder goldens cannot drift apart.
         run: |
-          python tools/dump_reference.py models/tiny-nllb --out ref-tiny/ --per-layer --random-ids
-          python tools/dump_reference.py models/deep-nllb --out ref-deep/ --per-layer --random-ids
-          python tools/dump_decoder_reference.py models/tiny-nllb --out ref-tiny/ \
+          python scripts/dump_reference.py models/tiny-nllb --out ref-tiny/ --per-layer --random-ids
+          python scripts/dump_reference.py models/deep-nllb --out ref-deep/ --per-layer --random-ids
+          python scripts/dump_decoder_reference.py models/tiny-nllb --out ref-tiny/ \
               --per-layer --random-ids --greedy --forced-bos 7
-          python tools/dump_decoder_reference.py models/deep-nllb --out ref-deep/ \
+          python scripts/dump_decoder_reference.py models/deep-nllb --out ref-deep/ \
               --per-layer --random-ids --greedy --forced-bos 123
           mkdir -p ref-eos ref-pad
           cp ref-tiny/*.ids.bin ref-tiny/manifest.* ref-eos/
           cp ref-deep/*.ids.bin ref-deep/manifest.* ref-pad/
           # no forced bos -> the model emits eos at step 0 -> the eos stop path
-          python tools/dump_decoder_reference.py models/tiny-nllb --out ref-eos/ \
+          python scripts/dump_decoder_reference.py models/tiny-nllb --out ref-eos/ \
               --random-ids --greedy
           # forced bos = pad_id -> the only fixture that separates the two
           # position rules. 7 of 9 cases fail here under NLLB_POS_CUMSUM.
-          python tools/dump_decoder_reference.py models/deep-nllb --out ref-pad/ \
+          python scripts/dump_decoder_reference.py models/deep-nllb --out ref-pad/ \
               --random-ids --greedy --forced-bos 1
 
       - name: Encoder gate
@@ -126,8 +126,8 @@ jobs:
 
       - name: f16 - build the half-precision fixtures
         run: |
-          python tools/convert_nllb_to_gguf.py models/tiny-nllb --no-tokenizer --outfile models/tiny-f16.gguf --outtype f16
-          python tools/convert_nllb_to_gguf.py models/deep-nllb --no-tokenizer --outfile models/deep-f16.gguf --outtype f16
+          python models/convert-nllb-to-gguf.py models/tiny-nllb --no-tokenizer --outfile models/tiny-f16.gguf --outtype f16
+          python models/convert-nllb-to-gguf.py models/deep-nllb --no-tokenizer --outfile models/deep-f16.gguf --outtype f16
 
       - name: f16 gate - same ids as f32, and every decision provably safe
         # The assertion is EXACT ID EQUALITY between the two precisions. The
@@ -166,8 +166,8 @@ jobs:
         # the source instead: no code line in the library or the CLI may touch
         # ->data. Comments are allowed to talk about it.
         run: |
-          if grep -nE -- '->data' src/*.cpp cli/*.cpp | grep -vE '^[^:]+:[0-9]+:\s*//'; then
-            echo "::error::->data used in src/ or cli/ - use ggml_backend_tensor_set/_get"
+          if grep -nE -- '->data' src/*.cpp examples/cli/*.cpp | grep -vE '^[^:]+:[0-9]+:\s*//'; then
+            echo "::error::->data used in src/ or examples/cli/ - use ggml_backend_tensor_set/_get"
             exit 1
           fi
 
@@ -219,7 +219,7 @@ jobs:
       - name: Profiler smoke test - nllb-bench must still run
         # Not a gate on any number: the sandbox and the runner are too noisy for
         # a time to assert on, and the numbers that matter were taken at the
-        # real 600M's shape (see PROFILE.md). This only keeps the tool from
+        # real 600M's shape (see docs/profile.md). This only keeps the tool from
         # rotting, which is what happens to a benchmark nothing runs.
         run: ./build/bin/nllb-bench models/deep-f32.gguf -t 4 --src 8 --steps 4
 
@@ -288,10 +288,10 @@ jobs:
         # release. This is the something.
         run: |
           pip install regex
-          python tools/gen_grapheme_tables.py > /tmp/grapheme.h
+          python scripts/gen_grapheme_tables.py > /tmp/grapheme.h
           if ! diff -q /tmp/grapheme.h src/nllb-grapheme-data.h > /dev/null; then
             echo "::error::src/nllb-grapheme-data.h is stale. Re-run"
-            echo "  python tools/gen_grapheme_tables.py > src/nllb-grapheme-data.h"
+            echo "  python scripts/gen_grapheme_tables.py > src/nllb-grapheme-data.h"
             echo "and RE-RUN THE TOKENIZER GATE: a Unicode version bump can move"
             echo "a cluster boundary, which moves the ids."
             diff /tmp/grapheme.h src/nllb-grapheme-data.h | head -40
@@ -319,7 +319,7 @@ jobs:
   #                        exercises the CPU fallback for ggml_diag_mask_inf)
   #   nllb-test-precision  --backend cpu:metal, same file twice: exact ids and
   #                        the margin audit, the claim f16 made against f32
-  # The acceptance run is on a real M1 with the real checkpoint; see BACKEND.md.
+  # The acceptance run is on a real M1 with the real checkpoint; see docs/backend.md.
   # ---------------------------------------------------------------------------
   metal:
     runs-on: macos-14
@@ -361,119 +361,19 @@ jobs:
           ./build/bin/nllb-test-batch models/small-f16.gguf -t 3 --backend metal -v
 
   # ---------------------------------------------------------------------------
-  # OPENCL (step 14). What this job can and cannot claim, stated up front so a
+  # CUDA (step 16). What this job can and cannot claim, stated up front so a
   # green tick is not read as more than it is.
-  #
-  # IT CAN: configure, compile the whole tree clean with the OpenCL backend in
-  # it, and assert that doing so leaves the CPU path BIT-IDENTICAL - which is
-  # the one thing a build flag can break invisibly, and which
-  # nllb-dump-states --diff answers in one run. It also types every backend
-  # spelling the docs advertise, because step 14 found `--backend ocl`
-  # documented and broken while `--backend opencl` worked: a table that
-  # translates names is a claim, and a claim nothing executes is a comment.
-  #
-  # IT CANNOT: run a single graph on OpenCL. No hosted runner has an OpenCL
-  # device that compiles ggml's kernels. pocl (the only ICD installable here)
-  # lacks cl_khr_fp16 and is DROPPED at registration, which this job asserts
-  # rather than ignores - if pocl ever gains fp16, that step goes red and the
-  # acceptance run in BACKEND.md becomes runnable in CI. Until then the OpenCL
-  # numbers come from real hardware and this job guards the plumbing.
-  # ---------------------------------------------------------------------------
-  opencl:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: OpenCL headers and ICD loader
-        run: sudo apt-get update -qq && sudo apt-get install -y opencl-headers ocl-icd-opencl-dev pocl-opencl-icd clinfo
-
-      - name: Build WITHOUT OpenCL - the baseline for the diff below
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
-
-      - name: Build WITH OpenCL
-        run: |
-          cmake -B build-cl -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-cl -j"$(nproc)"
-          ./build-cl/bin/nllb-cli --list-backends
-
-      - name: Small shape fixture
-        run: |
-          pip install numpy gguf
-          python tests/make_shape_model.py models/small-f32.gguf --d-model 256 \
-              --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64 --outtype f32
-          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 64 --max-new 24 --lengths 6 12 24 40
-
-      # THE ASSERTION THIS JOB EXISTS FOR. Linking a second backend into the
-      # process must not move one float of the CPU path.
-      - name: The OpenCL flag must not move the CPU path
-        run: |
-          ./build/bin/nllb-dump-states    models/small-f32.gguf ref-small/ /tmp/a.bin -t 2
-          ./build-cl/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/b.bin -t 2
-          ./build-cl/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin | tee /tmp/diff.txt
-          grep -q "^IDENTICAL" /tmp/diff.txt
-
-      - name: The gates still mean what they meant, in the OpenCL build
-        run: |
-          ./build-cl/bin/nllb-test-cache models/small-f32.gguf ref-small/ -t 2
-          python tests/corrupt_backend.py build-cl models/small-f32.gguf ref-small/ -t 2
-
-      # Every spelling BACKEND.md and the handoff advertise. `ocl` was
-      # documented and broken from step 13 until step 14 measured it; nothing
-      # executed the table, so nothing noticed. A missing device must FAIL with
-      # the device list rather than fall back to the CPU - the other half of
-      # the trap-49 contract, asserted for Metal in the synthetic job.
-      - name: Every documented backend spelling resolves the same way
-        run: |
-          set -x
-          for want in cpu auto gpu opencl ocl OCL OpenCL; do
-            out=$(./build-cl/bin/nllb-cli -m /dev/null --backend "$want" --tgt deu_Latn x 2>&1 || true)
-            # Only `cpu` and `auto` are required to resolve. `gpu` and every
-            # opencl spelling name a DEVICE, and there is no OpenCL device on
-            # this runner (see the step below), so they are required to fail
-            # with the device list instead - which is the contract, not a
-            # defect: `auto` falls back to the CPU and a named backend never
-            # does. The first draft of this loop put `gpu` in the first bucket
-            # and went red locally, which is the check working.
-            case "$want" in
-              cpu|auto)
-                echo "$out" | grep -q "is not available in this build" && exit 1 ;;
-              *)
-                echo "$out" | grep -q "devices:" || {
-                  echo "$out" | grep -q "failed to read magic" || exit 1; } ;;
-            esac
-          done
-
-      # An assertion about the ENVIRONMENT, not about this repo. If it ever goes
-      # red, pocl grew cl_khr_fp16 and the acceptance run can move into CI.
-      - name: pocl is still dropped for want of cl_khr_fp16 (an environment assertion)
-        run: |
-          ./build-cl/bin/nllb-cli --list-backends 2>&1 | tee /tmp/be.txt
-          grep -q "does not support FP16" /tmp/be.txt \
-            && echo "as expected: no OpenCL device here, so no graph ran on OpenCL" \
-            || echo "::warning::pocl no longer drops out - see BACKEND.md, the acceptance run may now be runnable in CI"
-
-  # ---------------------------------------------------------------------------
-  # CUDA (step 16). Same shape as the OpenCL job above and the same honesty
-  # about what a green tick means.
   #
   # IT CAN: configure with the CUDA backend, compile the whole tree clean with
   # nvcc in the build, and assert that doing so leaves the CPU path
   # BIT-IDENTICAL - the one thing a build flag can break invisibly. It also
-  # types every documented spelling, because step 14 found `ocl` documented and
-  # broken while `opencl` worked and nothing executed the table.
+  # types every documented spelling: a table that translates names is a claim,
+  # and a claim nothing executes is a comment.
   #
   # IT CANNOT: run a single graph. No hosted runner has an NVIDIA GPU. The
   # numbers come from real hardware (Colab, a workstation) and this job guards
   # the plumbing. The last step asserts the ABSENCE of a CUDA device, so if a
-  # runner ever grows one it goes red and the acceptance run in BACKEND.md
+  # runner ever grows one it goes red and the acceptance run in docs/backend.md
   # becomes runnable here.
   # ---------------------------------------------------------------------------
   cuda:
@@ -528,9 +428,8 @@ jobs:
           ./build-cu/bin/nllb-test-cache models/small-f32.gguf ref-small/ -t 2
           python tests/corrupt_backend.py build-cu models/small-f32.gguf ref-small/ -t 2
 
-      # `cuda` has one spelling, unlike metal/MTL and opencl/ocl, so this loop
-      # is cheaper than the OpenCL one - but it is the same contract: a missing
-      # device FAILS with the device list rather than falling back to the CPU.
+      # The contract: a missing device FAILS with the device list rather than
+      # falling back to the CPU.
       - name: Every documented backend spelling resolves the same way
         run: |
           set -x
@@ -550,115 +449,5 @@ jobs:
         run: |
           ./build-cu/bin/nllb-cli --list-backends 2>&1 | tee /tmp/be.txt
           grep -qi "CUDA" /tmp/be.txt \
-            && echo "::warning::a CUDA device appeared - see BACKEND.md, the acceptance run may now be runnable in CI" \
+            && echo "::warning::a CUDA device appeared - see docs/backend.md, the acceptance run may now be runnable in CI" \
             || echo "as expected: no CUDA device here, so nothing ran on it"
-
-  # ---------------------------------------------------------------------------
-  # VULKAN (step 17). The first device-backend job that RUNS GRAPHS in CI.
-  #
-  # Mesa's lavapipe is a conformant Vulkan 1.4 device that runs on the CPU.
-  # ggml-vulkan hides CPU-type devices unless GGML_VK_VISIBLE_DEVICES names
-  # them, so this job sets it. lavapipe reports uma: 0 - buffers are "device"
-  # memory to ggml - and it is what found the gapped-stride bug in ggml-vulkan's
-  # mul_mat (trap 55): the cache gate went red here before any Adreno saw it.
-  #
-  # IT CAN: build, keep the CPU path bit-identical, run the cache gate, the
-  # cross-backend precision gate and the corruption matrix ON a Vulkan device.
-  # IT CANNOT: say anything about speed, or about an Adreno's shader compiler.
-  # ---------------------------------------------------------------------------
-  vulkan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      GGML_VK_VISIBLE_DEVICES: "0"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Vulkan headers, loader, glslc, SPIRV-Headers, and lavapipe
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y libvulkan-dev glslc spirv-headers mesa-vulkan-drivers vulkan-tools
-          vulkaninfo --summary | grep -E "deviceName|driverName|apiVersion"
-
-      - name: Build WITHOUT Vulkan - the baseline for the diff below
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
-
-      - name: Build WITH Vulkan
-        run: |
-          cmake -B build-vk -DNLLB_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-vk -j"$(nproc)"
-          ./build-vk/bin/nllb-cli --list-backends | tee /tmp/be.txt
-          grep -q "^Vulkan0" /tmp/be.txt
-
-      - name: Small shape fixtures
-        run: |
-          pip install numpy gguf
-          for t in f32 f16; do
-            python tests/make_shape_model.py models/small-$t.gguf --d-model 256 \
-                --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64 --outtype $t
-          done
-          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 64 --max-new 24 --lengths 6 12 24 40
-
-      - name: The Vulkan flag must not move the CPU path
-        run: |
-          for t in f32 f16; do
-            ./build/bin/nllb-dump-states    models/small-$t.gguf ref-small/ /tmp/a.bin -t 2
-            ./build-vk/bin/nllb-dump-states models/small-$t.gguf ref-small/ /tmp/b.bin -t 2
-            ./build-vk/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin | tee /tmp/diff.txt
-            grep -q "^IDENTICAL" /tmp/diff.txt
-          done
-
-      # The K-view workaround is an exact copy; it must not move the CPU either.
-      - name: NLLB_KV_CONT=1 is arithmetic-free on the CPU
-        run: |
-          ./build/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/a.bin -t 2
-          NLLB_KV_CONT=1 ./build/bin/nllb-dump-states models/small-f32.gguf ref-small/ /tmp/c.bin -t 2
-          ./build/bin/nllb-dump-states --diff /tmp/a.bin /tmp/c.bin | grep -q "^IDENTICAL"
-
-      - name: KV ops, device vs CPU (trap 55 canary)
-        run: |
-          ./build-vk/bin/nllb-probe-kv-ops vulkan | tee /tmp/probe.txt || true
-          # did it RUN? An empty table passes every grep below.
-          grep -q "^device: Vulkan0" /tmp/probe.txt
-          test "$(grep -cE '^(cpy|mul_mat)' /tmp/probe.txt)" -eq 45
-          ! grep -E "^mul_mat\(cont\(K\)|^cpy|^mul_mat\(V view" /tmp/probe.txt | grep -q "BAD"
-          grep -q "^mul_mat(K view, q).*BAD" /tmp/probe.txt \
-            || echo "::warning::ggml-vulkan now reads gapped batch strides correctly - kv_k_cont can be retired (trap 55)"
-
-      - name: Cache gate ON VULKAN - full = exact, [arena] exact, f32 and f16
-        run: |
-          for t in f32 f16; do
-            NLLB_BACKEND=vulkan NLLB_ARENA_TRACE=1 ./build-vk/bin/nllb-test-cache models/small-$t.gguf ref-small/ -t 2 | tee /tmp/cache.txt
-            grep "cached step" /tmp/cache.txt | grep -vqE "splits +1 +compute" && { echo "a cached step split"; exit 1; } || true
-          done
-
-      - name: The workaround is load-bearing - without it the cache gate must go RED
-        run: |
-          if NLLB_KV_CONT=0 NLLB_BACKEND=vulkan ./build-vk/bin/nllb-test-cache models/small-f32.gguf ref-small/ -t 2 > /tmp/nocont.txt; then
-            echo "::warning::cache gate passes on Vulkan without kv_k_cont - ggml fixed trap 55?"
-          else
-            grep -q "FIRST BAD LAYER 1" /tmp/nocont.txt
-          fi
-
-      - name: CPU vs Vulkan - exact ids and the margin audit
-        run: |
-          for t in f32 f16; do
-            ./build-vk/bin/nllb-test-precision models/small-$t.gguf models/small-$t.gguf ref-small/ -t 2 --backend cpu:vulkan
-          done
-
-      - name: Backend corruption matrix ON VULKAN - the same table as on the CPU?
-        run: NLLB_BACKEND=vulkan python tests/corrupt_backend.py build-vk models/small-f16.gguf ref-small/ -t 2
-
-      - name: Every documented backend spelling resolves
-        run: |
-          for want in cpu auto gpu vulkan vk VK Vulkan Vulkan0; do
-            out=$(./build-vk/bin/nllb-cli -m /dev/null --backend "$want" --tgt deu_Latn x 2>&1 || true)
-            echo "$want: $out" | tail -1
-            echo "$out" | grep -q "is not available in this build" && exit 1 || true
-          done

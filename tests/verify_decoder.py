@@ -38,7 +38,7 @@ import numpy as np
 import torch
 from transformers import M2M100ForConditionalGeneration
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from ref_encoder import GGUFModel, encode      # noqa: E402
 from ref_decoder import decode                 # noqa: E402
 

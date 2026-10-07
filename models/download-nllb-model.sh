@@ -25,7 +25,7 @@ REPO="${NLLB_HF_REPO:-JaydeepGupta/nllb-200-distilled-600M-GGUF}"
 REV="${NLLB_HF_REV:-main}"
 BASE_URL="${NLLB_BASE_URL:-https://huggingface.co/${REPO}/resolve/${REV}}"
 
-# name | file | size | what it is. Keep in step with MODELS.md and the model card.
+# name | file | size | what it is. Keep in step with docs/models.md and the model card.
 MODELS=(
     "f16|nllb-600M-f16.gguf|1.24 GB|the default. Greedy ids identical to HF on every golden"
     "q8emb|nllb-600M-q8emb.gguf|0.99 GB|token_embd at Q8_0, rest f16. 1.33x faster on M1 CPU, chrF 96.57"

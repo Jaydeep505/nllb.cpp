@@ -17,7 +17,7 @@ a finished row's output is discarded and its ne[3] slice is computed
 independently of every other row, so how it is fed cannot reach a running row.
 If either ever fires, something has coupled the rows.
 
-Harness rules from the four harness bugs in claude/handoff.md: sections are
+Harness rules from the four harness bugs in docs/dev/handoff.md: sections are
 found by "[" at the START of a line; a build failure is fatal, not a "missed";
 a crash or an unexpected exit code counts as firing; and the baseline must be
 green or nothing below it means anything.

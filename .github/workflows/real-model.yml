@@ -82,7 +82,7 @@ jobs:
 
       - name: Convert to GGUF
         run: |
-          python tools/convert_nllb_to_gguf.py models/nllb-600M \
+          python models/convert-nllb-to-gguf.py models/nllb-600M \
               --outfile models/nllb-600M-f32.gguf --outtype f32
           ls -la models/nllb-600M-f32.gguf
 
@@ -100,9 +100,9 @@ jobs:
         # dump_reference.py MUST run first: the decoder dumper reads
         # ref/<name>.ids.bin back so the two cannot drift apart.
         run: |
-          python tools/dump_reference.py models/nllb-600M --out ref/ \
+          python scripts/dump_reference.py models/nllb-600M --out ref/ \
               --lang eng_Latn --per-layer
-          python tools/dump_decoder_reference.py models/nllb-600M --out ref/ \
+          python scripts/dump_decoder_reference.py models/nllb-600M --out ref/ \
               --tgt-lang "$TGT_LANG" --per-layer --greedy --max-new-tokens "$MAX_NEW"
 
       - name: Dump the tokenizer corpus
@@ -111,7 +111,7 @@ jobs:
         # the slow part (~2 min) and is the only pass that can catch the C++
         # matching something the reference leaves alone, so it stays.
         run: |
-          python tools/dump_tokenizer_reference.py models/nllb-600M --out ref/ \
+          python scripts/dump_tokenizer_reference.py models/nllb-600M --out ref/ \
               --src-lang eng_Latn --fuzz 20000
 
       - name: Tokenizer gate
@@ -169,11 +169,11 @@ jobs:
       - name: Dump the translation goldens (text -> text)
         # The ONLY reference dump in this repo whose output is text rather than
         # numbers. It also records the checkpoint's own generation_config
-        # num_beams, which is the open question in claude/handoff.md: if that
+        # num_beams, which is the open question in docs/dev/handoff.md: if that
         # default is above 1, every "exact against generate()" claim here is
         # exact against a NON-default configuration.
         run: |
-          python tools/dump_translation_reference.py models/nllb-600M --out ref/ \
+          python scripts/dump_translation_reference.py models/nllb-600M --out ref/ \
               --src-lang eng_Latn --tgt-lang "$TGT_LANG" --max-new-tokens "$MAX_NEW"
           cat ref/translations.txt
 

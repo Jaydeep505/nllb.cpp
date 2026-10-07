@@ -21,7 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))   # gen_grapheme_tables, for the converter
 
 import numpy as np                                             # noqa: E402
 
@@ -31,7 +32,14 @@ try:
 except ImportError:
     sys.exit("pip install gguf")
 
-from convert_nllb_to_gguf import ARCH, grapheme_tables, load_vocab   # noqa: E402
+# models/convert-nllb-to-gguf.py has dashes in its name (whisper.cpp's
+# convention for models/convert-*.py), so it is loaded by path, not imported.
+import importlib.util                                          # noqa: E402
+_spec = importlib.util.spec_from_file_location(
+    "convert_nllb_to_gguf", ROOT / "models" / "convert-nllb-to-gguf.py")
+_conv = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_conv)
+ARCH, grapheme_tables, load_vocab = _conv.ARCH, _conv.grapheme_tables, _conv.load_vocab
 
 
 BREAKAGES = {

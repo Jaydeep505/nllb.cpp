@@ -123,9 +123,9 @@ def build(tmp: Path, build_dir: Path) -> Path:
         sys.exit(f"no libggml-base under {build_dir}; configure and build first")
     out = tmp / "gate"
     cmd = ["g++", "-std=c++17", "-O1", "-w",
-           f"-I{tmp}", f"-I{ROOT / 'vendor/ggml/include'}",
+           f"-I{tmp}", f"-I{ROOT / 'ggml/include'}",
            "-o", str(out),
-           str(tmp / "test_tokenizer.cpp"), str(tmp / "nllb-vocab.cpp"),
+           str(tmp / "test-tokenizer.cpp"), str(tmp / "nllb-vocab.cpp"),
            f"-L{lib}", "-lggml-base", f"-Wl,-rpath,{lib}"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
@@ -167,9 +167,9 @@ def main() -> int:
 
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            for f in ("src/nllb-vocab.h", "src/nllb-grapheme-data.h"):
+            for f in ("include/nllb-vocab.h", "src/nllb-grapheme-data.h"):
                 shutil.copy(ROOT / f, tmp / Path(f).name)
-            shutil.copy(ROOT / "tests/test_tokenizer.cpp", tmp / "test_tokenizer.cpp")
+            shutil.copy(ROOT / "tests/test-tokenizer.cpp", tmp / "test-tokenizer.cpp")
             (tmp / "nllb-vocab.cpp").write_text(mutated)
             gate = build(tmp, Path(args.build_dir))
             r = subprocess.run([str(gate), args.gguf, args.ref, "--max-report", "1"],

@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # BUILD
 # ---------------------------------------------------------------------------
-#   git submodule update --init --recursive        # vendor/ggml, first time only
+#   git submodule update --init --recursive        # ggml, first time only
 #   cmake -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build -j
 #
@@ -16,16 +16,29 @@
 # notice is a bench number that means nothing.
 #
 # Device backends are OFF by default and each is one flag:
-#   -DNLLB_OPENCL=ON   step 14   (+ -DNLLB_ADRENO=ON on Snapdragon)
 #   -DNLLB_CUDA=ON     step 16   (+ -DCMAKE_CUDA_ARCHITECTURES=<sm> — pin it)
-#   -DNLLB_VULKAN=ON   step 17   (needs glslc at BUILD time; see BUILD.md)
 # Metal needs no flag: it is found on macOS and, since step 13, used.
 #
 # On macOS the configure step finds Accelerate, BLAS and Metal and links them.
 # Since step 13 Metal IS used: every graph goes through ggml_backend_sched, and
 # nllb-cli defaults to --backend auto (Metal when present). The LIBRARY default
 # is still the CPU, so every gate means what it meant unless NLLB_BACKEND=metal
-# is set. BLAS is linked and never scheduled. See BACKEND.md.
+# is set. BLAS is linked and never scheduled. See docs/backend.md.
+#
+# ---------------------------------------------------------------------------
+# LAYOUT (same shape as whisper.cpp)
+# ---------------------------------------------------------------------------
+#   include/      public headers: nllb.h (C++ API), nllb-vocab.h, nllb-c.h (C API)
+#   src/          the library (libnllb)                     src/CMakeLists.txt
+#   examples/     cli, server, quantize, bench, nllb.swiftui examples/CMakeLists.txt
+#   tests/        the gates + their Python harnesses        tests/CMakeLists.txt
+#   models/       download + convert-nllb-to-gguf.py
+#   scripts/      reference dumpers, measurement, publishing
+#   docs/         per-step write-ups; docs/dev/ is the dev log
+#   ggml/         git submodule
+#
+#   -DNLLB_BUILD_EXAMPLES=OFF / -DNLLB_BUILD_TESTS=OFF skip those directories;
+#   both OFF builds the library alone (what build-xcframework.sh does).
 #
 # ---------------------------------------------------------------------------
 # WHAT GETS BUILT, and what each one claims
@@ -48,11 +61,11 @@
 #   bin/nllb-dump-states     everything the API computes, as bytes; --diff two
 #                            BUILDS. How step 13 was held to bit-identity.
 #
-# The gates run in one command: ./tools/step10_measure.sh
-# Everything above is documented in claude/handoff.md; the trap numbers refer
+# The gates run in one command: ./scripts/step10-measure.sh
+# Everything above is documented in docs/dev/handoff.md; the trap numbers refer
 # to its "traps" section.
 # ---------------------------------------------------------------------------
-# 3.18 and not 3.14 since step 16: vendor/ggml/src/ggml-cuda/CMakeLists.txt
+# 3.18 and not 3.14 since step 16: ggml/src/ggml-cuda/CMakeLists.txt
 # declares that minimum itself for CMAKE_CUDA_ARCHITECTURES, and a top-level
 # minimum lower than what a component needs leaves CMP0104 unset in this
 # directory. No platform in the matrix ships CMake older than 3.22.
@@ -70,55 +83,12 @@ set(GGML_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 # ---------------------------------------------------------------------------
-# OPENCL (step 14).  -DNLLB_OPENCL=ON
-# ---------------------------------------------------------------------------
-# ggml's own switch is GGML_OPENCL and it works unchanged, because ggml is
-# add_subdirectory'd above and reads its options out of the same cache. This
-# flag exists on top of it for one reason: ggml's OPENCL DEFAULTS ARE ADRENO
-# DEFAULTS, and taking them on anything else produces a build that configures,
-# compiles, and then either refuses the device at runtime or runs kernels
-# written for a GPU this is not.  GGML_OPENCL_USE_ADRENO_KERNELS is ON by
-# default upstream; here the portable value is OFF and -DNLLB_ADRENO=ON is how
-# you ask for it back.
-#
-#   cmake -B build -DNLLB_OPENCL=ON -DCMAKE_BUILD_TYPE=Release   # portable
-#   cmake -B build -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON ...         # Snapdragon
-#
-# What the device must have, checked by ggml at registration and NOT by this
-# file: cl_khr_fp16, and - on an OpenCL 3.0 device, where subgroups became
-# optional - cl_khr_subgroups or cl_intel_subgroups. A device missing either is
-# dropped with a warning on stderr and the registry then has no OpenCL device
-# in it, so `--backend opencl` fails with the device list (trap 49's message)
-# rather than with anything about extensions. Read the ggml_opencl: lines.
-# Measured: pocl 5.0 has the subgroups and NOT fp16, so it is dropped; Intel's
-# CPU runtime has both and is picked up. See BACKEND.md.
-#
-# Kernels are EMBEDDED by default (ggml's default too, kept deliberately): with
-# GGML_OPENCL_EMBED_KERNELS=OFF ggml copies .cl files next to the binary at
-# configure time and loads them by relative path at runtime, which makes the
-# binary non-relocatable. This project ships one file that carries everything
-# it needs - that is the step-8 argument about the grapheme tables, and it
-# applies to kernels for the same reason.
-option(NLLB_OPENCL "nllb: build the ggml OpenCL backend"            OFF)
-option(NLLB_ADRENO "nllb: use ggml's Adreno-optimised OpenCL kernels" OFF)
-
-if(NLLB_OPENCL)
-    set(GGML_OPENCL                    ON          CACHE BOOL   "" FORCE)
-    set(GGML_OPENCL_EMBED_KERNELS      ON          CACHE BOOL   "" FORCE)
-    set(GGML_OPENCL_USE_ADRENO_KERNELS ${NLLB_ADRENO} CACHE BOOL "" FORCE)
-    set(GGML_OPENCL_TARGET_VERSION     "300"       CACHE STRING "" FORCE)
-    message(STATUS "nllb: OpenCL backend ON (adreno kernels: ${NLLB_ADRENO})")
-endif()
-
-# ---------------------------------------------------------------------------
 # CUDA (step 16).  -DNLLB_CUDA=ON
 # ---------------------------------------------------------------------------
-# ggml's own switch is GGML_CUDA and it works unchanged, for the same reason
-# GGML_OPENCL does: ggml is add_subdirectory'd below and reads its options out
-# of the same cache. This flag exists on top of it to say at CONFIGURE time
-# what this build will be able to schedule (see the TARGET check below) —
-# unlike OpenCL there are no Adreno-shaped defaults to undo, so that is all it
-# does.
+# ggml's own switch is GGML_CUDA and it works unchanged: ggml is
+# add_subdirectory'd below and reads its options out of the same cache. This
+# flag exists on top of it to say at CONFIGURE time what this build will be
+# able to schedule (see the TARGET check below), and that is all it does.
 #
 #   cmake -B build -DNLLB_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 #   cmake -B build -DNLLB_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 ...   # T4
@@ -146,96 +116,46 @@ if(NLLB_CUDA)
     endif()
 endif()
 
-# ---------------------------------------------------------------------------
-# VULKAN (step 17).  -DNLLB_VULKAN=ON
-# ---------------------------------------------------------------------------
-# ggml's own switch is GGML_VULKAN and works unchanged. This flag exists for
-# the same reason as NLLB_OPENCL / NLLB_CUDA: to fail at CONFIGURE time, by
-# name, when the backend was not built (see the TARGET check below).
-#
-#   cmake -B build -DNLLB_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-#   cmake -B build -DNLLB_VULKAN=ON -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON ...  # X Elite
-#
-# BUILD needs: the Vulkan headers + loader import library, glslc (shaders are
-# compiled to SPIR-V at build time and embedded), and SPIRV-Headers' CMake
-# config. The LunarG SDK has all three (set VULKAN_SDK); on Ubuntu:
-#   apt install libvulkan-dev glslc spirv-headers
-# RUN needs only the driver's vulkan-1.dll / libvulkan.so.1.
-#
-# ggml builds a HOST tool (vulkan-shaders-gen) during the build and runs it,
-# and ggml refuses cl.exe on Arm outright ("MSVC is not supported for ARM, use
-# clang"). So a Windows-on-Arm build is done NATIVELY with clang (a
-# windows-11-arm runner, or Arm64 hardware), not cross-compiled with -A ARM64
-# from x64. See QDC-XELITE.md and .github/workflows/xelite.yml.
-#
-# Two runtime facts that are not visible from here, found in step 17:
-#  * ggml registers Vulkan BEFORE OpenCL (ggml-backend-reg.cpp), so with both, `auto` and
-#    `gpu` pick Vulkan0. Name `opencl` to get the other one.
-#  * ggml-vulkan HIDES CPU-type devices (Mesa lavapipe, SwiftShader) unless
-#    GGML_VK_VISIBLE_DEVICES names them. That is how CI runs graphs on it.
-option(NLLB_VULKAN "nllb: build the ggml Vulkan backend" OFF)
-
-if(NLLB_VULKAN)
-    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-    message(STATUS "nllb: Vulkan backend ON")
-endif()
-
 # Local ggml fixes pending upstream (patches/ggml-*.patch). Each is applied once:
 # if it already reverse-applies, it is in the tree (applied earlier, or merged
 # upstream after a pin bump), and is skipped.
-option(NLLB_GGML_PATCHES "nllb: apply patches/ggml-*.patch to vendor/ggml" ON)
+option(NLLB_GGML_PATCHES "nllb: apply patches/ggml-*.patch to ggml" ON)
 if(NLLB_GGML_PATCHES)
     find_package(Git REQUIRED)
     file(GLOB NLLB_GGML_PATCH_FILES "${CMAKE_CURRENT_SOURCE_DIR}/patches/ggml-*.patch")
     foreach(p ${NLLB_GGML_PATCH_FILES})
         execute_process(COMMAND ${GIT_EXECUTABLE} apply --reverse --check "${p}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ggml"
             RESULT_VARIABLE nllb_already OUTPUT_QUIET ERROR_QUIET)
         if(NOT nllb_already EQUAL 0)
             execute_process(COMMAND ${GIT_EXECUTABLE} apply "${p}"
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ggml"
                 RESULT_VARIABLE nllb_rc)
             if(NOT nllb_rc EQUAL 0)
-                message(FATAL_ERROR "nllb: ${p} does not apply to vendor/ggml - the pin moved; refresh or drop the patch")
+                message(FATAL_ERROR "nllb: ${p} does not apply to ggml - the pin moved; refresh or drop the patch")
             endif()
             message(STATUS "nllb: applied ${p}")
         endif()
     endforeach()
 endif()
 
-add_subdirectory(vendor/ggml)
+add_subdirectory(ggml)
 
 # ggml registers its backends at runtime and a missing one is a runtime
 # failure, not a link error - so say at CONFIGURE time what this build will and
 # will not be able to schedule. The step-13 failure that cost the most time was
 # a device that was present and not FOUND, and the fix started with printing
 # what was there.
-if(NLLB_OPENCL AND NOT TARGET ggml-opencl)
-    message(FATAL_ERROR
-        "NLLB_OPENCL=ON but ggml did not build its OpenCL backend. Its "
-        "find_package(OpenCL REQUIRED) needs headers and an ICD loader: "
-        "apt install opencl-headers ocl-icd-opencl-dev (Linux), or point "
-        "-DOpenCL_INCLUDE_DIR / -DOpenCL_LIBRARY at them. See BUILD.md.")
-endif()
-
-if(NLLB_VULKAN AND NOT TARGET ggml-vulkan)
-    message(FATAL_ERROR
-        "NLLB_VULKAN=ON but ggml did not build its Vulkan backend. Its "
-        "find_package(Vulkan COMPONENTS glslc) needs the headers, the loader "
-        "library and glslc: install the LunarG SDK and set VULKAN_SDK, or on "
-        "Ubuntu `apt install libvulkan-dev glslc spirv-headers`. See BUILD.md.")
-endif()
-
 if(NLLB_CUDA AND NOT TARGET ggml-cuda)
     message(FATAL_ERROR
         "NLLB_CUDA=ON but ggml did not build its CUDA backend. Its "
         "find_package(CUDAToolkit) found no toolkit: install one and put nvcc "
         "on PATH, or point -DCUDAToolkit_ROOT at it. `nvcc --version` is the "
-        "check. See BUILD.md.")
+        "check. See docs/build.md.")
 endif()
 
-# Warnings on OUR targets only - vendor/ggml is added above and keeps its own
-# flags. This is not housekeeping: the [arena] report in tests/test_cache.cpp
+# Warnings on OUR targets only - ggml is added above and keeps its own
+# flags. This is not housekeeping: the [arena] report in tests/test-cache.cpp
 # shipped with a printf missing its first argument, which is a segfault on the
 # failure path and invisible on the passing one. -Wformat (via -Wall) catches
 # exactly that, and a gate that crashes instead of reporting is worse than no
@@ -246,136 +166,26 @@ else()
     set(NLLB_WARN -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# nllb-c.cpp is the plain-C facade (include/nllb-c.h) that Swift and other FFIs
-# import; build-xcframework.sh puts only that header in the framework.
-add_library(nllb STATIC src/nllb.cpp src/nllb-vocab.cpp src/nllb-c.cpp)
-target_compile_options(nllb PRIVATE ${NLLB_WARN})
-target_include_directories(nllb PUBLIC include src)
-target_link_libraries(nllb PUBLIC ggml)
+# Shared by every subdirectory: our warning policy and one bin/ for every
+# executable, so every doc and script can say ./build/bin/<name>.
+function(nllb_add_executable name)
+    add_executable(${name} ${ARGN})
+    target_compile_options(${name} PRIVATE ${NLLB_WARN})
+    set_target_properties(${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endfunction()
 
-# NLLB_BUILD_TOOLS=OFF builds the library alone - no CLI, no gates, no tools.
-# That is what build-xcframework.sh passes: an iOS target has no use for a
-# command-line binary and the Xcode generator would try to bundle each one.
-option(NLLB_BUILD_TOOLS "nllb: build nllb-cli, the gates and the tools" ON)
+add_subdirectory(src)
 
-if(NLLB_BUILD_TOOLS)
+# Neither is needed for the library. build-xcframework.sh turns both OFF: an iOS
+# target has no use for a command-line binary and the Xcode generator would try
+# to bundle each one.
+option(NLLB_BUILD_EXAMPLES "nllb: build examples/ (nllb-cli, nllb-server, nllb-quantize, nllb-bench)" ON)
+option(NLLB_BUILD_TESTS    "nllb: build tests/ (the gates)" ON)
 
-# The CLI. This is the only binary here that is a *product* rather than a
-# gate: text in, translation out, no goldens and no reference dumps. It is
-# also the first thing in the repo to cross the text -> text seam, which is
-# why tests/verify_translation.py exists.
-add_executable(nllb-cli cli/nllb-cli.cpp)
-target_link_libraries(nllb-cli PRIVATE nllb)
-target_compile_options(nllb-cli PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-# The HTTP server (examples/server). A product binary like nllb-cli, so it is
-# built with the tools; NLLB_BUILD_SERVER=OFF skips it (it pulls in two large
-# single headers and a thread dependency the gates do not need).
-option(NLLB_BUILD_SERVER "nllb: build examples/server (nllb-server)" ON)
-if(NLLB_BUILD_SERVER)
-    find_package(Threads REQUIRED)
-    add_subdirectory(examples/server)
+if(NLLB_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
 
-add_executable(nllb-test tests/test_encoder.cpp)
-target_link_libraries(nllb-test PRIVATE nllb)
-target_compile_options(nllb-test PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-decoder tests/test_decoder.cpp)
-target_link_libraries(nllb-test-decoder PRIVATE nllb)
-target_compile_options(nllb-test-decoder PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-decoder PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-generate tests/test_generate.cpp)
-target_link_libraries(nllb-test-generate PRIVATE nllb)
-target_compile_options(nllb-test-generate PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-generate PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-batch tests/test_batch.cpp)
-target_link_libraries(nllb-test-batch PRIVATE nllb)
-target_compile_options(nllb-test-batch PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-batch PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-cache tests/test_cache.cpp)
-target_link_libraries(nllb-test-cache PRIVATE nllb)
-target_compile_options(nllb-test-cache PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-cache PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-bench tests/bench_cached.cpp)
-target_link_libraries(nllb-bench PRIVATE nllb)
-target_compile_options(nllb-bench PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-tokenizer tests/test_tokenizer.cpp)
-target_link_libraries(nllb-test-tokenizer PRIVATE nllb)
-target_compile_options(nllb-test-tokenizer PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-tokenizer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-mmap tests/test_mmap.cpp)
-target_link_libraries(nllb-test-mmap PRIVATE nllb)
-target_compile_options(nllb-test-mmap PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-mmap PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-# The quantiser. A TOOL, not a gate: it writes files, it asserts about the file
-# it wrote (trap 32), and it makes no claim about the model. It links ggml
-# directly rather than through libnllb because it never builds a graph - it
-# reads a GGUF, calls ggml_quantize_chunk and writes another one.
-add_executable(nllb-quantize tools/nllb-quantize.cpp)
-target_link_libraries(nllb-quantize PRIVATE ggml)
-target_compile_options(nllb-quantize PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-quantize PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-# ocl-probe. NOT a gate and not linked against nllb or ggml - it links the
-# OpenCL ICD loader alone, on purpose, so that when it disagrees with ggml the
-# fault is in ggml and when it agrees the fault is in the runtime. Built only
-# with the backend, since without it there is no OpenCL to find.
-#
-# It answers the two questions step 14 needed and clinfo cannot: will ggml
-# REGISTER this device (extensions), and will ggml's kernels COMPILE on it
-# (a half math builtin under -cl-fast-relaxed-math). Those fail at different
-# stages and the second one looks like success until it does not.
-if(NLLB_OPENCL)
-    # ggml's own find_package(OpenCL) ran inside add_subdirectory, so its
-    # result variables are in THAT directory's scope and are empty here. Ask
-    # again - it is cached, so this costs nothing and is not a second search.
-    find_package(OpenCL REQUIRED)
-    add_executable(ocl-probe tools/ocl-probe.c)
-    # HEADERS ONLY - no link against the ICD loader. The probe dlopen()s the
-    # loader at runtime, so it can be cross-compiled for a phone without
-    # first cross-compiling an ICD loader for that phone, which is the
-    # dependency you would otherwise have to build BEFORE finding out whether
-    # the device works at all. On Linux/Android that needs libdl.
-    target_include_directories(ocl-probe PRIVATE ${OpenCL_INCLUDE_DIRS})
-    if(NOT WIN32)
-        target_link_libraries(ocl-probe PRIVATE ${CMAKE_DL_LIBS})
-    endif()
-    target_compile_options(ocl-probe PRIVATE ${NLLB_WARN})
-    set_target_properties(ocl-probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+if(NLLB_BUILD_TESTS)
+    add_subdirectory(tests)
 endif()
-
-# Step 17. The cached step's four KV-cache ops (the two cpy writes into the
-# cache views, the two mul_mats over them) one at a time, device vs CPU, at
-# Tn = 1, 3, 9. Needs no model. It is how the Vulkan cache-gate failure was
-# localised to one op, and the first thing to run on any new device backend.
-add_executable(nllb-probe-kv-ops tests/probe_kv_ops.cpp)
-target_link_libraries(nllb-probe-kv-ops PRIVATE ggml)
-target_compile_options(nllb-probe-kv-ops PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-probe-kv-ops PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(nllb-test-precision tests/test_precision.cpp)
-target_link_libraries(nllb-test-precision PRIVATE nllb)
-target_compile_options(nllb-test-precision PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-test-precision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-# Not a gate on its own: dumps everything the public API computes as raw bytes,
-# so two BUILDS can be compared with `nllb-dump-states --diff a.bin b.bin`. That
-# is how the step-13 backend port was held to bit-identity against the old CPU
-# path, and it is the instrument for a ggml submodule bump.
-add_executable(nllb-dump-states tests/dump_states.cpp)
-target_link_libraries(nllb-dump-states PRIVATE nllb)
-target_compile_options(nllb-dump-states PRIVATE ${NLLB_WARN})
-set_target_properties(nllb-dump-states PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-endif() # NLLB_BUILD_TOOLS

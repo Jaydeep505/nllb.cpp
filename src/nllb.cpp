@@ -250,7 +250,7 @@ void nllb_get_f32(const ggml_tensor * t, std::vector<float> & dst, size_t n) {
 // pre-port build is the measurement.
 //
 // Trap 13 is preserved exactly: an offset too LARGE still masks nothing at
-// Tq == 1. The chunked passes in tests/test_cache.cpp remain the only test of
+// Tq == 1. The chunked passes in tests/test-cache.cpp remain the only test of
 // this function's n_past arithmetic.
 void nllb_causal_mask(std::vector<float> & m, int n_kv, int Tq, int n_past) {
     m.assign((size_t) n_kv * Tq, 0.0f);
@@ -302,26 +302,12 @@ bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
     // registry or device name matches the family asked for.
     const bool any_gpu = want == "auto" || want == "gpu";
     // A family is a SET OF SPELLINGS THAT MEAN EACH OTHER, not a canonical name
-    // with aliases hanging off it. The first version of this table was the
-    // second kind - it matched a device only when `want` was the family's own
-    // name - and step 14 measured what that costs: `--backend opencl` resolved
-    // and `--backend ocl` did not, on the same machine, against a device ggml
-    // calls "GPUOpenCL" in a registry it calls "OpenCL". The handoff had been
-    // claiming both spellings worked since step 13, because the table LOOKS
-    // like it lists them. Every row is now entered from any member, so naming a
-    // family by any of its spellings finds a device named by any other.
-    //
-    // Note "opencl" resolves by the plain substring test as well, since
-    // "gpuopencl" contains it. That is luck, not design: "ocl" does not appear
-    // in "gpuopencl" or in "opencl" as a substring, which is exactly the case
-    // the plain test cannot cover and the table exists for.
+    // with aliases hanging off it: every row is entered from any member, so
+    // naming a family by any of its spellings finds a device named by any
+    // other. The supported device backends are Metal and CUDA.
     static const char * const families[][3] = {
         { "metal",  "mtl",    nullptr },
-        { "vulkan", "vk",     nullptr },
         { "cuda",   nullptr,  nullptr },
-        { "rocm",   "hip",    nullptr },
-        { "sycl",   nullptr,  nullptr },
-        { "opencl", "ocl",    nullptr },
     };
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -476,23 +462,6 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         }
         model.on_cpu       = model.backend == model.backend_cpu;
         model.backend_name = ggml_backend_name(model.backend);
-
-        // ggml-vulkan's mul_mat decides "contiguous" from dims 0 and 1 alone
-        // (ggml_vk_dim01_contiguous) and then steps between the matrices of
-        // a batch by ne00*ne01, ignoring nb[2]. The self-attention K view is
-        // [HD, n_kv, H] over a [HD, n_ctx, H] cache: rows contiguous, heads
-        // n_ctx rows apart. So every head after the first read the wrong rows
-        // whenever n_kv < n_ctx - measured by nllb-probe-kv-ops, and invisible
-        // to `full = exact` whenever the gate's cache was exactly full.
-        // A ggml_cont before the matmul makes the operand genuinely contiguous.
-        // Scoped to Vulkan so no verified backend changes; the env var exists
-        // to price it elsewhere and to re-test once ggml is fixed upstream.
-        {
-            const std::string reg = nllb_lower(ggml_backend_reg_name(
-                ggml_backend_dev_backend_reg(ggml_backend_get_device(model.backend))));
-            model.kv_k_cont = reg == "vulkan";
-            if (const char * e = ::getenv("NLLB_KV_CONT")) model.kv_k_cont = *e == '1';
-        }
     }
 
     // Try the mapping FIRST. gguf is ALWAYS parsed with no_alloc = true now:
@@ -1026,7 +995,7 @@ bool nllb_decode(const nllb_model & model,
         // moved to a mask tensor (nllb_causal_mask) because Metal does not
         // implement this op. This path is the REFERENCE the cache gate diffs
         // the cached step against, and the first draft of step 13 routed both
-        // through the one helper - which made tests/test_cache.cpp blind to
+        // through the one helper - which made tests/test-cache.cpp blind to
         // any bug in it: a mask offset one too large broke both sides
         // identically and the gate passed (tests/corrupt_backend.py,
         // `mask-too-large`). Trap 44 again: a control that shares the defect
@@ -1285,7 +1254,7 @@ bool nllb_kv_cache_init(const nllb_model & model,
 
         // Identical arithmetic to the un-cached path's cK/cV, including the
         // bias and the absence of the attention scale (that goes on Q). If this
-        // ever stops matching, tests/test_cache.cpp reports it as a
+        // ever stops matching, tests/test-cache.cpp reports it as a
         // cross-attention divergence at layer il rather than as wrong ids.
         ggml_tensor * cK = ggml_add(ctx, ggml_mul_mat(ctx, l.cwk, enc_t), l.cbk);
         ggml_tensor * cV = ggml_add(ctx, ggml_mul_mat(ctx, l.cwv, enc_t), l.cbv);
@@ -1392,7 +1361,7 @@ bool nllb_decode_cached(const nllb_model & model,
     // this hides is one-sided: an offset that is too LARGE still masks nothing
     // and is invisible to single-token generation, while one that is too small
     // masks a real key and is caught immediately (trap 13). That asymmetry is
-    // why tests/test_cache.cpp feeds the same prefix in chunks as well.
+    // why tests/test-cache.cpp feeds the same prefix in chunks as well.
     ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, Tn);
     ggml_set_name(kq_mask, "kq_mask");
     ggml_set_input(kq_mask);
@@ -1465,9 +1434,8 @@ bool nllb_decode_cached(const nllb_model & model,
 
         ggml_tensor * Kv = ggml_view_3d(ctx, kc, HD, n_kv, H,
                 kc->nb[1], kc->nb[2], 0);                           // (HD, n_kv, H)
-        // Heads sit n_ctx rows apart, so this view has a GAPPED batch stride.
-        // The CPU and Metal read nb[2]; ggml-vulkan does not (see kv_k_cont).
-        if (model.kv_k_cont) Kv = ggml_cont(ctx, Kv);
+        // Heads sit n_ctx rows apart, so this view has a GAPPED batch stride;
+        // the matmul must read nb[2]. nllb-probe-kv-ops checks a new backend.
         ggml_tensor * Vv = ggml_view_3d(ctx, vc, n_kv, HD, H,
                 vc->nb[1], vc->nb[2], 0);                           // (n_kv, HD, H)
 
@@ -1775,7 +1743,7 @@ bool nllb_generate(const nllb_model & model,
 //
 // Everything below mirrors the single-sequence functions above op for op, with
 // two changes: activations carry all rows ([D, T*B]) and attention carries the
-// batch as ne[3]. Keep it that way. tests/test_batch.cpp's [equal] pass holds
+// batch as ne[3]. Keep it that way. tests/test-batch.cpp's [equal] pass holds
 // an equal-length batch BIT-IDENTICAL to separate single calls, and that only
 // holds while each row's arithmetic is the single path's arithmetic.
 // ==========================================================================
@@ -2191,7 +2159,6 @@ bool nllb_decode_cached_batch(const nllb_model & model,
 
         ggml_tensor * Kv = ggml_view_4d(ctx, kc, HD, n_kv, H, B,
                 kc->nb[1], kc->nb[2], kc->nb[3], 0);                    // (HD, n_kv, H, B)
-        if (model.kv_k_cont) Kv = ggml_cont(ctx, Kv);
         ggml_tensor * Vv = ggml_view_4d(ctx, vc, n_kv, HD, H, B,
                 vc->nb[1], vc->nb[2], vc->nb[3], 0);                    // (n_kv, HD, H, B)
 

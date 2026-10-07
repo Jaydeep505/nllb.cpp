@@ -17,6 +17,7 @@ on:
     paths:
       - 'include/**'
       - 'src/**'
+      - 'ggml'
       - 'CMakeLists.txt'
       - 'build-xcframework.sh'
       - 'examples/nllb.swiftui/**'

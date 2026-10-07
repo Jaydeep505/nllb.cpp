@@ -30,7 +30,7 @@ ARCH = "nllb"
 
 
 def sinusoidal(num_positions: int, dim: int, padding_idx: int) -> np.ndarray:
-    # Same as tools/convert_nllb_to_gguf.py: (half - 1) denominator, sin|cos
+    # Same as models/convert-nllb-to-gguf.py: (half - 1) denominator, sin|cos
     # concatenated, padding row zeroed.
     half = dim // 2
     step = math.log(10000.0) / (half - 1)
@@ -55,7 +55,7 @@ def main() -> int:
     ap.add_argument("--n-ctx", type=int, default=1024)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--outtype", choices=("f32", "f16"), default="f32",
-                    help="f16 mirrors tools/convert_nllb_to_gguf.py: norms, biases "
+                    help="f16 mirrors models/convert-nllb-to-gguf.py: norms, biases "
                          "and the position table stay f32, everything else halves")
     a = ap.parse_args()
 
@@ -64,7 +64,7 @@ def main() -> int:
     a.outfile.parent.mkdir(parents=True, exist_ok=True)
     w = gguf.GGUFWriter(str(a.outfile), ARCH)
 
-    # Same rule as tools/convert_nllb_to_gguf.py's should_keep_f32: norms,
+    # Same rule as models/convert-nllb-to-gguf.py's should_keep_f32: norms,
     # biases and the position table are tiny and are exactly where precision
     # loss compounds, so they stay f32 even in f16 mode.
     def cast(name: str, arr: np.ndarray) -> np.ndarray:
