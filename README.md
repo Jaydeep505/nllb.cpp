@@ -1,3 +1,5 @@
+
+
 # nllb.cpp
 
 <p align="center">
@@ -96,16 +98,34 @@ cmake --build build -j --config Release
 | RTX 50xx | `120` (CUDA 12.8+) |
 
 ## Use cases
-On device iOS app:
 
-Offline translation on iPhone with the `nllb.xcframework` (Metal) — see
-[`examples/nllb.swiftui`](examples/nllb.swiftui).
+### On-device iOS app
 
-https://github.com/user-attachments/assets/your-video-id
+Offline translation on iPhone with `nllb.xcframework` (Metal) — see [`examples/nllb.swiftui`](examples/nllb.swiftui).
 
-Local server:
+https://github.com/user-attachments/assets/a1814c0a-a6c0-49da-b586-6ac41cbff86d
 
-https://github.com/user-attachments/assets/your-video-id
+<a href="examples/nllb.swiftui/demo.mp4">
+  <img src="examples/nllb.swiftui/demo.gif" width="280" alt="nllb.cpp iOS demo — click for full video">
+</a>
+
+### Local translation server
+
+HTTP server on top of libnllb — see [`examples/server`](examples/server).
+
+<a href="examples/server/demo.mp4">
+  <img src="examples/server/demo.gif" width="600" alt="nllb-server demo — click for full video">
+</a>
+
+
+
+
+
+
+https://github.com/user-attachments/assets/10956991-8eef-44c1-abfe-1db7902392de
+
+
+
 
 
 
