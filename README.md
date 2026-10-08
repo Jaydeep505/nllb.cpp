@@ -24,8 +24,7 @@ machine translation model (600M distilled):
 - Support for CPU-only inference
 - GPU backends: [Metal](#apple-silicon-support) on Apple Silicon and [CUDA](#nvidia-gpu-support) on NVIDIA
 - Zero memory allocations per token: the compute graph's memory is reused across decode steps
-- Low memory footprint: weights are memory-mapped, so a 1.2 GB f16 model needs only ~100 MB of dirty memory
-- KV cache, with an optional f16 KV cache to halve its memory
+- 1.4–1.8x faster than HF transformers, 3x less peak memory on Apple Silicon and 13x less host RAM on CUDA — benchmarks and method.
 - F16 / F32 weights and [integer quantization](examples/quantize) via `nllb-quantize`
 - C-style API ([`include/nllb-c.h`](include/nllb-c.h)) for Swift and other languages
 - Verified against HuggingFace: token-for-token identical output on the test sets
