@@ -52,8 +52,14 @@ cmake --build build -j --config Release
 ```
 Start using cli for translation:(e.g. From English to German)
 ```bash
-./build/bin/nllb-cli -m models/nllb-600M-f16.gguf --src eng_Latn --tgt deu_Latn "Hello, world!"
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
+    --src eng_Latn --tgt deu_Latn 'Hello, world!'
 
+#for clean output
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
+    --src eng_Latn --tgt deu_Latn 'Hello, world!' 2>/dev/null
+```
+```bash
 #Translate a .txt file:
 ./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
     --src deu_Latn --tgt eng_Latn < input.txt > output.txt

@@ -53,3 +53,6 @@ first sentence (same as HF `generate()`), so send one sentence per line.
 `/health` also reports `queue`, `batches`, `lines` and `avg_batch_size`. If
 `avg_batch_size` stays near 1 under load, raise `--batch-wait-ms`.
 
+## Demo
+
+https://github.com/user-attachments/assets/10956991-8eef-44c1-abfe-1db7902392de

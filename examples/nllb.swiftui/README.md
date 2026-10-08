@@ -52,3 +52,6 @@ the missing key.
 | `nllb-600M-f16.gguf` | 1.24 GB | the default; byte-identical to HF on the goldens |
 | `nllb-600M-q8emb.gguf` | 0.996 GB | 1.33x faster on the M1 CPU; chrF 96.57 |
 
+## Demo
+
+https://github.com/user-attachments/assets/a1814c0a-a6c0-49da-b586-6ac41cbff86d
