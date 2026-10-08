@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Break the step-13 backend port on purpose, to find out whether the gates notice.
+"""Break the ggml-backend execution path on purpose, to find out whether the gates notice.
 
-The port moved every graph from ggml_graph_compute_with_ctx on a bump arena to
-ggml_backend_sched on gallocr. That opened failure modes the old code could not
-have: a tensor the host reads back but never marked as an output (gallocr hands
+Every graph runs through ggml_backend_sched on gallocr, which has its own
+failure modes: a tensor the host reads back but never marked as an output (gallocr hands
 its memory to something later), an input written through ->data instead of
 through the backend, a causal mask that is now DATA rather than an op. Each
 mutation below is one of those, written the way it would plausibly be written.
@@ -66,7 +65,7 @@ MUTATIONS = [
        "    ggml_set_name(cur, \"dec_out\");\n    hs.push_back(cur);\n\n    ggml_tensor * logits", None)]),
 
     ("mask-too-large",
-     "causal mask offset one too LARGE (trap 13): invisible at one token per step",
+     "causal mask offset one too LARGE: invisible at one token per step",
      "fire",
      [("for (int i = n_past + j + 1; i < n_kv; ++i) {",
        "for (int i = n_past + j + 2; i < n_kv; ++i) {", None)]),
@@ -78,7 +77,7 @@ MUTATIONS = [
        "for (int i = n_past + j; i < n_kv; ++i) {", None)]),
 
     ("kq-before-write",
-     "expand the real kq node before the cache write (trap 15)",
+     "expand the real kq node before the cache write",
      "fire",
      [("        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kp, k_dst));\n"
        "        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));\n", "", None),
@@ -92,7 +91,7 @@ MUTATIONS = [
 
     ("mask-through-data",
      "write the cached step's mask through ->data instead of "
-     "ggml_backend_tensor_set - the host-pointer habit of steps 2-12",
+     "ggml_backend_tensor_set",
      "report",
      [("        ggml_backend_tensor_set(kq_mask, mask.data(),    0, mask.size() * sizeof(float));\n"
        "        ok = nllb_compute_graph(model, sched, gf, n_threads, \"cached decoder\", err);",

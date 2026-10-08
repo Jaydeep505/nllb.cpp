@@ -381,7 +381,7 @@ bool nllb_vocab_load_from_gguf(const gguf_context * g, nllb_vocab & v,
 
     // ---- grapheme tables --------------------------------------------------
     // The file's copy wins; the compiled-in header is the fallback for a GGUF
-    // written before step 8b, or by some other tool. Either way v.gcb / v.ext
+    // written by an older converter, or by some other tool. Either way v.gcb / v.ext
     // end up holding the same shape, so nothing downstream has to care.
     {
         const int64_t k_g = gguf_find_key(g, "tokenizer.nllb.gcb_ranges");
@@ -435,7 +435,7 @@ bool nllb_vocab_load_from_gguf(const gguf_context * g, nllb_vocab & v,
         const int64_t k_af = gguf_find_key(g, "tokenizer.nllb.added_flags");
         if (k_at < 0 || k_af < 0) {
             err = "no tokenizer.nllb.added_tokens in this GGUF. This file was "
-                  "converted before step 8; re-run models/convert-nllb-to-gguf.py. "
+                  "converted by an older converter; re-run models/convert-nllb-to-gguf.py. "
                   "Without them a sentence containing the literal text "
                   "'eng_Latn' or '</s>' tokenizes as letters instead of as that "
                   "token, which is a silent divergence from the reference.";
@@ -474,7 +474,7 @@ bool nllb_vocab_load_from_gguf(const gguf_context * g, nllb_vocab & v,
     const int64_t k_cm = gguf_find_key(g, "tokenizer.ggml.precompiled_charsmap");
     if (k_cm < 0) {
         err = "no tokenizer.ggml.precompiled_charsmap in this GGUF. This file "
-              "was converted before step 8; re-run models/convert-nllb-to-gguf.py. "
+              "was converted by an older converter; re-run models/convert-nllb-to-gguf.py. "
               "Refusing rather than tokenizing without SentencePiece's "
               "normalizer, which would silently differ from the goldens on any "
               "input that is not plain ASCII.";
@@ -603,7 +603,7 @@ bool nllb_vocab_load_from_gguf(const gguf_context * g, nllb_vocab & v,
     const int64_t k_h = gguf_find_key(g, "tokenizer.nllb.merges_hash");
     if (k_h < 0) {
         err = "no tokenizer.nllb.merges_hash in this GGUF. This file was "
-              "converted before step 8; re-run models/convert-nllb-to-gguf.py.";
+              "converted by an older converter; re-run models/convert-nllb-to-gguf.py.";
         return false;
     }
     v.merges_hash = gguf_get_val_u64(g, k_h);

@@ -19,8 +19,7 @@ are - which is exactly where a broken gate is least likely to be noticed.
     python tests/fake_cli.py --matrix ref-fake/
 
 Every breakage below is a mistake the real CLI could plausibly make, and each
-is one of the failure modes docs/dev/handoff.md predicted for step 9 - the ones
-no existing gate can see, because every other gate in this repo stops at ids.
+is one of the failure modes no existing gate can see, because every other gate in this repo stops at ids.
 """
 
 from __future__ import annotations

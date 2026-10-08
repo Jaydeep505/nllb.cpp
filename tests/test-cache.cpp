@@ -4,8 +4,8 @@
 //
 // WHY THIS GATE DOES NOT LOOK AT HF.
 // The un-cached path is already proven exact against `generate(num_beams=1,
-// do_sample=False)` on the real 600M - that is what nllb-test-generate does, and
-// it is the whole reason step 4 came before step 5. Diffing the cache against
+// do_sample=False)` on the real 600M - that is what nllb-test-generate does.
+// Diffing the cache against
 // torch would test both at once and leave a failure ambiguous between "the
 // cache is wrong" and "the graph is wrong". Diffing it against the un-cached
 // path isolates it: everything the two share cancels, and what is left is
@@ -237,8 +237,7 @@ int main(int argc, char ** argv) {
             "           every assertion. That split is the point: [full] must stay\n"
             "           bit-identical, so red there is a cache bug, while [kv16] can\n"
             "           only ever be close, because rounding K and V is a precision\n"
-            "           change and asking it for bit-identity would be trap 19 in a\n"
-            "           new costume. Read the two together. Trap 37.\n",
+            "           change. Read the two together.\n",
             argv[0]);
         return 2;
     }
@@ -432,8 +431,7 @@ int main(int argc, char ** argv) {
         // per call, and `chunk` tokens per call. NLLB_POS_ABSOLUTE on the
         // un-cached side, because that is the rule the cache implements and
         // the only one it can implement - diffing against NLLB_POS_CUMSUM here
-        // would report a position-rule disagreement as a cache bug, which is
-        // precisely the trap this step was warned about.
+        // would report a position-rule disagreement as a cache bug.
         // Truncate to n_ctx before teacher-forcing. When generation stops on
         // NLLB_STOP_CONTEXT the last id was emitted but never fed back in, so
         // the sequence is one longer than anything nllb_decode will accept -
@@ -486,11 +484,10 @@ int main(int argc, char ** argv) {
         // It runs the identical graph as [full] - one cached call over the whole
         // prefix - with K and V stored at f16, so the only difference between
         // the two rows is the rounding of two activations. That makes [full] the
-        // control for [kv16] in the exact sense trap 20 means: [full] contains
+        // control for [kv16]: [full] contains
         // no f16 and must be bit-identical, so anything [kv16] has that [full]
-        // does not is the f16 KV cache and nothing else. Gating it would be
-        // trap 19 - a tolerance that encodes a precision, pointed at a different
-        // one. Trap 37.
+        // does not is the f16 KV cache and nothing else. Gating it would mean
+        // a tolerance that encodes a precision, pointed at a different one.
         enum { P_GROW = 0, P_FULL, P_STEP, P_CHUNK, P_KVF16, P_N };
         struct pass_t { const char * tag; int chunk; bool cached; bool exact; int kv; };
         const pass_t passes[P_N] = {
@@ -754,10 +751,10 @@ int main(int argc, char ** argv) {
                         "  What it does NOT say is whether any greedy decision "
                         "changes - K and V ride a residual\n"
                         "  stream that reaches ~4200 and is never renormalised, and "
-                        "step 7 left only 1.50x of\n"
+                        "there is only 1.50x of\n"
                         "  per-decision headroom. Run `nllb-test-precision --kv "
                         "f32:f16` on the same model to\n"
-                        "  price it in the units that decide the output. Trap 37.\n",
+                        "  price it in the units that decide the output.\n",
                         n_kv16_cases, n_kv16_cases == 1 ? "" : "s",
                         worst_kv16, kv16_ndiff, total_ndiff);
         }

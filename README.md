@@ -50,7 +50,7 @@ Build the nllb-cli example:
 cmake -B build
 cmake --build build -j --config Release
 ```
-Start using cli for translation:(e.g. From English to German)
+Start using cli for translation:(e.g. From [english to german](docs/languages.md))
 ```bash
 ./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
     --src eng_Latn --tgt deu_Latn 'Hello, world!'

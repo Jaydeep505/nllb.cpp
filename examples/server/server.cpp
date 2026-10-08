@@ -211,7 +211,7 @@ struct engine {
         // Reuse the gguf_context the model already holds, as nllb-cli does.
         if (!nllb_vocab_load_from_gguf(model.gguf, vocab, err)) {
             fprintf(stderr, "error: tokenizer load failed: %s\n"
-                            "  a GGUF converted before step 8 has no tokenizer; reconvert it.\n", err.c_str());
+                            "  this GGUF has no tokenizer; reconvert it.\n", err.c_str());
             return false;
         }
         return true;

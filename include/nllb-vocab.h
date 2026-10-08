@@ -18,7 +18,7 @@
 //
 //   * The pipeline is: Precompiled(charsmap) -> Replace(" {2,}", " ")
 //     -> Metaspace(U+2581, add_prefix_space) -> BPE. The charsmap comes out of
-//     the GGUF; a file converted before step 8 does not have it and is
+//     the GGUF; a file converted without it is
 //     REFUSED rather than silently normalised differently.
 //
 // The full-sentence form NLLB's encoder wants is

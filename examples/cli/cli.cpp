@@ -16,12 +16,12 @@
 // existing gate can see:
 //
 //   * the target language code forced at the wrong position (it belongs at
-//     the first GENERATED position, not in the encoder input - trap 10);
+//     the first GENERATED position, not in the encoder input);
 //   * --src and --tgt silently swapped, or one of them ignored;
 //   * a lost or doubled leading space in detokenization (Metaspace);
 //   * the eos stripped or kept in the printed string.
 //
-// tests/verify_translation.py is the gate for all four. See docs/cli.md.
+// tests/verify_translation.py is the gate for all four.
 //
 // WHAT GOES WHERE. The translation, and only the translation, goes to stdout,
 // one line per input. Everything else - banners, ids, timings, warnings - goes
@@ -78,8 +78,8 @@ void usage(const char * argv0) {
         "       %s --list-backends\n"
         "\n"
         "  -m, --model PATH      GGUF converted by models/convert-nllb-to-gguf.py.\n"
-        "                        It must carry the tokenizer (converted at step 8\n"
-        "                        or later); an older file is refused by name.\n"
+        "                        It must carry the tokenizer; an older file is\n"
+        "                        refused by name.\n"
         "      --src CODE        FLORES-200 source code (default eng_Latn)\n"
         "      --tgt CODE        FLORES-200 target code, e.g. deu_Latn\n"
         "      --list-langs      print every code in this model and exit. Reads\n"
@@ -93,8 +93,7 @@ void usage(const char * argv0) {
         "                          auto   the GPU if this build has one, else CPU\n"
         "                          metal  Metal; FAILS rather than fall back\n"
         "                          cuda   CUDA; FAILS rather than fall back\n"
-        "                          cpu    ggml's CPU backend - the reference, and\n"
-        "                                 bit-identical to every pre-step-13 build\n"
+        "                          cpu    ggml's CPU backend - the reference\n"
         "                          or a device name from --list-backends\n"
         "                        On a GPU backend, ops it does not implement run\n"
         "                        on the CPU automatically (-v says how many splits).\n"
@@ -298,10 +297,10 @@ int main(int argc, char ** argv) {
     bool kv_f16     = false;  // an arithmetic change, so it is opt-in. See the
                               // note on nllb_kv_type in include/nllb.h.
     bool use_cache  = true;   // see the note by nllb_generate_params::use_cache:
-                              // the LIBRARY default is off so the step-4 gate
+                              // the LIBRARY default is off so the HF-parity gate
                               // keeps testing the un-cached path. A user-facing
-                              // binary wants the fast path, and step 5 proved
-                              // the two agree bit for bit at equal length.
+                              // binary wants the fast path; the two agree bit
+                              // for bit at equal length.
     int  n_threads  = 4;
     int  max_new    = 256;
     int  batch      = 1;      // --batch N; 1 is the unbatched path, untouched
@@ -425,7 +424,7 @@ int main(int argc, char ** argv) {
     if (!nllb_vocab_load_from_gguf(model.gguf, vocab, err)) {
         std::fprintf(stderr,
             "tokenizer load failed: %s\n"
-            "  a GGUF converted before step 8 does not carry the tokenizer.\n"
+            "  this GGUF does not carry the tokenizer.\n"
             "  Reconvert:  python models/convert-nllb-to-gguf.py <snapshot> "
             "--outfile %s --outtype f16\n",
             err.c_str(), model_path.c_str());
@@ -487,7 +486,7 @@ int main(int argc, char ** argv) {
     base.use_cache      = use_cache;
     base.kv_type        = kv_f16 ? NLLB_KV_F16 : NLLB_KV_F32;
     // forced_bos_id is set per call in translate_one; eos and dec_start come
-    // from the model (dec_start is eos for NLLB, not bos - trap 8).
+    // from the model (dec_start is eos for NLLB, not bos).
 
     int n_fail = 0;
 

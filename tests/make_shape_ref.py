@@ -3,7 +3,7 @@
 
 The shape model has the real 600M's geometry and random weights, which is
 enough for nllb-test-cache and nllb-test-precision - both compare two C++ paths
-against each other, so the weights cancel - and it is what lets step 10's
+against each other, so the weights cancel - and it is what lets the quantisation
 plumbing be exercised in a sandbox with no checkpoint. What it has never had is
 a ref/ directory: every gate reads `manifest_gen.txt` and `<name>.ids.bin` for
 its source ids and generation settings, and those come from
@@ -28,7 +28,7 @@ make_shape_model.py:
   CANNOT any headroom number. Random weights give O(1) activations; the real
         checkpoint's residual stream reaches ~4200 and its f16 headroom is
         1.50x against this fixture's 38.5x. Only the RATIOS transfer, and only
-        as lower bounds - trap 29.
+        as lower bounds.
   CANNOT anything the tokenizer or the CLI touches. The shape model has no
         vocabulary at all.
   CANNOT anything about what the model SAYS. There are no goldens here. The ids
@@ -36,7 +36,7 @@ make_shape_model.py:
         written, so nllb-test-generate refuses to run rather than passing
         against a target it invented.
 
-That last one is the step-4 SKIP lesson applied in advance: a fixture that
+That last one matters: a fixture that
 silently satisfies a gate it cannot support is worse than a missing one.
 """
 
@@ -66,7 +66,7 @@ def main() -> int:
 
     # A forced target code that is a real row of the embedding table and is not
     # a special token. On the real model this is a FLORES id; here it only has
-    # to be in range, because trap 10 is about the POSITION it lands at, which
+    # to be in range, because what matters is the POSITION it lands at, which
     # the C++ side decides and this file must not.
     forced_bos = a.vocab - 100
 

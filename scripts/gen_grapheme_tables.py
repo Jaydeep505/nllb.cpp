@@ -5,7 +5,7 @@ Why this exists at all: HuggingFace's `spm_precompiled` iterates the input in
 GRAPHEME CLUSTERS, not codepoints, and a cluster shorter than 6 bytes that hits
 the charsmap trie is replaced WHOLE - so "\\r\\n" becomes one space, and
 "A U+0302 U+0300" becomes "A-circumflex" with the second mark dropped. Getting
-the cluster boundaries wrong changes the ids. See docs/dev/step8-cpp-tokenizer.md.
+the cluster boundaries wrong changes the ids.
 
     pip install regex
     python scripts/gen_grapheme_tables.py > src/nllb-grapheme-data.h

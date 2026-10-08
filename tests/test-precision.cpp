@@ -10,7 +10,7 @@
 // so pointing that gate at an f16 checkpoint produces a wall of red that means
 // "this is f16" and reads as "this is broken". Loosening its tolerance to 1e-03
 // would be worse: it would then pass a genuine graph error, which is precisely
-// what the handoff means by "stay on f32 for verification".
+// why verification stays on f32.
 //
 // So f16 gets its own gate, and it asks a different question. Not "how far did
 // the numbers move" - they moved, that is what f16 is - but:
@@ -55,12 +55,12 @@
 // below f16's error and the ids match by luck. That fixture therefore cannot
 // support an f16 claim, however green it looks, and this gate is what says so.
 //
-// EXACT ID EQUALITY IS AN f16 ASSERTION, NOT A PRECISION ASSERTION (trap 30).
+// EXACT ID EQUALITY IS AN f16 ASSERTION, NOT A PRECISION ASSERTION.
 // It is what the paragraphs above describe, it held for f16 on the real 600M,
 // and it is spent at Q8_0: one real-model greedy decision has already flipped
 // while the translation stayed good. The fix is not a looser tolerance - there
-// is no tolerance here to loosen, and trap 19 says what happens when you invent
-// one. The fix is a DIFFERENT ASSERTION, and it has to be asked for by name:
+// is no tolerance here to loosen, and inventing one would be wrong.
+// The fix is a DIFFERENT ASSERTION, and it has to be asked for by name:
 //
 //   [topk]  the reference's argmax must still be inside the candidate's top k.
 //
@@ -72,8 +72,7 @@
 // k = the vocabulary size it would assert nothing.
 //
 // --allow-id-drift is what switches the assertion over. WITHOUT it nothing
-// changes: ids must match exactly, and every f16 number in docs/dev/handoff.md
-// reproduces. WITH it, id drift is reported and [topk] is what fails the run.
+// changes: ids must match exactly, and every f16 number reproduces. WITH it, id drift is reported and [topk] is what fails the run.
 // The flag is deliberately not a default: a run that permits drift has to say
 // so, so that a green line always names the claim it is green about.
 //
@@ -163,7 +162,7 @@ double headroom_of(const float * pr, const float * pc, int n, int best) {
 // Where the reference's winner sits in the CANDIDATE's ordering. 0 means the
 // candidate agrees; k or more fails the [topk] assertion.
 //
-// The tie rule is the project's everywhere else (trap 11): equal logits are
+// The tie rule is the project's everywhere else: equal logits are
 // ordered by ascending id, because torch.argmax returns the first maximum and
 // nllb_generate's strict `>` does the same. So the rank is the count of tokens
 // that beat `best` outright plus the count that tie with it and sort earlier.
@@ -213,7 +212,7 @@ int main(int argc, char ** argv) {
             "\n"
             "  --allow-id-drift  ids may move; the assertion becomes [topk].\n"
             "                    Required at Q8_0 and below, where exact id\n"
-            "                    equality is spent (trap 30). Without it the ids\n"
+            "                    equality is spent. Without it the ids\n"
             "                    are still the assertion and f16 runs are\n"
             "                    unchanged.\n"
             "  --topk K          k for [topk] (default 4). The reference's argmax\n"
@@ -225,7 +224,7 @@ int main(int argc, char ** argv) {
             "                    teacher-forced logits then come from the CACHED\n"
             "                    decoder on both sides, because the un-cached one\n"
             "                    has no KV cache to be f16.\n"
-            "  --backend A:B     backend for reference:candidate (step 13), e.g.\n"
+            "  --backend A:B     backend for reference:candidate, e.g.\n"
             "                    cpu:metal. PASS THE SAME FILE TWICE: the weights\n"
             "                    are the constant and the KERNELS are the variable.\n"
             "                    This is the cross-backend gate - exact ids plus\n"
@@ -285,8 +284,8 @@ int main(int argc, char ** argv) {
     if (topk < 1) topk = 1;
     // Both sides cached, or neither. The un-cached decoder has no KV cache, so
     // "f32 KV" there is not a configuration - it is the absence of one - and
-    // routing one side through the cache and not the other would fold trap 16's
-    // 4e-07 regrouping into a number this gate would then report as f16's cost.
+    // routing one side through the cache and not the other would fold the
+    // 4e-07 cached/un-cached regrouping into a number this gate would then report as f16's cost.
     const bool kv_compare = (kv_ref != kv_cand);
 
     nllb_model ref, cand;
@@ -308,8 +307,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
     // Two backends that resolved to the same device would be the same code on
-    // the same bytes - vacuous, and the step-4 SKIP lesson says a vacuous
-    // comparison must not print PASS.
+    // the same bytes - vacuous, and a vacuous comparison must not print PASS.
     const bool be_compare = ref.backend_name != cand.backend_name;
     if (!be_ref.empty() && !be_compare) {
         std::fprintf(stderr,
@@ -457,8 +455,7 @@ int main(int argc, char ** argv) {
         nllb_decode_result d_ref, d_cand;
         // One prefix, all logits, both models. Which decoder does it is decided
         // ONCE for both sides - see kv_compare's definition. When the KV types
-        // match this is nllb_decode, byte for byte the call every earlier
-        // measurement in docs/dev/handoff.md was taken with.
+        // match this is nllb_decode, byte for byte the reference call.
         auto teacher_force = [&](const nllb_model & m, const nllb_encode_result & e,
                                  int kvt, nllb_decode_result & out) -> bool {
             if (!kv_compare) {

@@ -31,8 +31,7 @@ TWO THINGS THIS DUMPER CHECKS ABOUT ITSELF, both recorded in the header:
     cannot be attributed to nllb.cpp. `pipeline_agrees` says whether they
     matched on every case.
 
-  * `generation_config.num_beams`. docs/dev/handoff.md flags this as an open
-    question: if NLLB ships a default above 1, then every "exact against
+  * `generation_config.num_beams`. An open question: if NLLB ships a default above 1, then every "exact against
     generate()" result in this project is exact against a NON-default
     configuration. This dumper forces num_beams=1 (that is what nllb.cpp
     implements) and records what the checkpoint's own default was, so the

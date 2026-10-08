@@ -10,14 +10,14 @@ run the gate, record which passes said FAIL. The source is restored afterwards
     python tests/corrupt_batch.py build MODEL.gguf [-t N] [--only a,b] [other nllb-test-batch args]
 
 Run it at BOTH precisions and compare the tables. A gate whose matrix changes
-with the weight type means something different at each one (step 11's lesson).
+with the weight type means something different at each one.
 
-Two mutations are EXPECTED to be inert and are asserted to stay inert (trap 43):
+Two mutations are EXPECTED to be inert and are asserted to stay inert:
 a finished row's output is discarded and its ne[3] slice is computed
 independently of every other row, so how it is fed cannot reach a running row.
 If either ever fires, something has coupled the rows.
 
-Harness rules from the four harness bugs in docs/dev/handoff.md: sections are
+Harness rules: sections are
 found by "[" at the START of a line; a build failure is fatal, not a "missed";
 a crash or an unexpected exit code counts as firing; and the baseline must be
 green or nothing below it means anything.

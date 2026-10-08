@@ -11,7 +11,6 @@
 //             IDS rather than in table rows.
 //   [golden]  ref/manifest.json - the same nine prompts the encoder goldens
 //             use, compared WITH the [src_lang] ... [eos] wrapping. Exact ids.
-//             This is the gate the handoff asked for.
 //   [corpus]  ref/tokenizer_corpus.txt - ~240k cases from
 //             scripts/dump_tokenizer_reference.py, comparing pieces (no
 //             wrapping) AND the decode. Nine sentences cannot cover a
@@ -27,7 +26,7 @@
 // BPE bug do not look alike.
 //
 // A pass whose input file is missing is a FAILURE, not a skip - deleting the
-// goldens must not turn the gate green (step 4 shipped exactly that bug). Say
+// goldens must not turn the gate green. Say
 // --no-golden / --no-corpus / --no-sweep to leave one out on purpose.
 
 #include "nllb-vocab.h"

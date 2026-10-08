@@ -3,10 +3,8 @@
 Convert facebook/nllb-200-distilled-600M (HF M2M100 architecture) to GGUF, and
 requantise a GGUF this tool wrote.
 
-ONE TOOL, TWO INPUTS. This file is the merge of the old
-models/convert-nllb-to-gguf.py and the old requantize_gguf.py, which shared a
-quantisation plan, a file_type rule and a metadata-integrity assertion and
-kept three copies of each between them. Which mode runs is decided by the
+ONE TOOL, TWO INPUTS: convert a checkpoint, or requantise a GGUF. Both share
+the quantisation plan, file_type rule and metadata-integrity assertion. Which mode runs is decided by the
 first argument, not by a flag:
 
     <dir>/           an HF snapshot  -> CONVERT   (metadata is GENERATED)
@@ -18,7 +16,7 @@ Everything else - the type table, the per-tensor plan, `--quantize/--keep/
 verification - is the same code down both paths. The two modes differ in
 exactly one thing, and it is the thing worth not sharing: a converted file's
 metadata is built from config.json and the tokenizer files, and a requantised
-file's metadata is copied key by key off the input and then checked (trap 32).
+file's metadata is copied key by key off the input and then checked.
 
 CONVERT
     pip install numpy gguf sentencepiece regex
@@ -43,14 +41,14 @@ way examples/quantize/quantize.cpp does:
                   --min-rank dims or whose row length is not a multiple of the
                   block size.
 
-So the two step-10 mixes are one command each, from either input:
+So the two common mixes are one command each, from either input:
 
     --outtype f16 --quantize token_embd.weight --type q8_0        # q8emb
     --outtype f16 --quantize '*' --min-rank 2 --type q8_0         # q8all
 
 Norms, biases and position_embd.weight stay F32 under every base type and are
 never quantised, in both modes (should_keep_f32). K-quants are NOT here:
-gguf-py dequantises them and cannot write them, which is trap 33 and is what
+gguf-py dequantises them and cannot write them, which is what
 examples/quantize/quantize.cpp exists for. This tool covers f32/f16/bf16 and the
 linear quants, and it is the only one of the two that can go straight from a
 checkpoint to a quantised file without writing the 2.46 GB f32 intermediate.
@@ -680,7 +678,7 @@ def should_keep_f32(name: str) -> bool:
 # What gguf-py can WRITE. Q2_K..Q6_K and the IQ family raise
 # NotImplementedError on the quantise path while dequantising fine, which is
 # exactly how you fail to notice: a script that only ever dequantises looks
-# like it supports them. Trap 33. The K-quants are examples/quantize/quantize.cpp's
+# like it supports them. The K-quants are examples/quantize/quantize.cpp's
 # job and cannot be produced from Python at all.
 QUANT_TYPES = {
     "q8_0": GGMLQuantizationType.Q8_0,
@@ -719,7 +717,7 @@ SKIP_KEYS = WRITER_OWNED | READER_SYNTHETIC
 # The keys nllb_vocab_load REFUSES a file for, in src/nllb-vocab.cpp order.
 # Checked on the way OUT of both modes, because the failure they produce is a
 # 1.2 GB file that loads its weights and then will not translate, and the
-# cheapest place to notice is here. Trap 32.
+# cheapest place to notice is here.
 REQUIRED_TOKENIZER_KEYS = (
     "tokenizer.ggml.tokens",
     "tokenizer.ggml.precompiled_charsmap",
@@ -751,11 +749,9 @@ def file_type_for(rows) -> LlamaFileType:
 
     A mix is not a format, so this key is a label and the per-tensor types in
     the file are the truth - which is why it is worth getting the label right
-    rather than clever. BY BYTES, not by count: requantize_gguf.py counted
-    TENSORS, and this model has 10 f32 norms and biases for every 6 weights, so
-    an f16 file came out labelled ALL_F32 and a q8emb file labelled ALL_F32 as
-    well. Nothing in src/nllb.cpp reads the key, which is why that survived
-    two steps. By bytes it reproduces the old converter's hard-coded
+    rather than clever. BY BYTES, not by count: this model has 10 f32 norms and
+    biases for every 6 weights, so counting TENSORS would label an f16 file
+    ALL_F32. By bytes it reproduces the conventional
     ALL_F32/MOSTLY_F16 exactly, and says MOSTLY_Q8_0 for q8all.
     """
     by_type = Counter()
@@ -822,7 +818,7 @@ def plan_target(row: PlanRow, args) -> tuple[GGMLQuantizationType, str]:
     target = QUANT_TYPES.get(args.type) or WRITABLE[args.type]
     blck, _ = GGML_QUANT_SIZES[target]
     if row.n_per_row % blck != 0:
-        # trap 34: legal for NLLB (every row is 1024 or 4096) but never assume
+        # legal for NLLB (every row is 1024 or 4096) but never assume
         return base, f"row {row.n_per_row} not a multiple of {blck}"
     if row.frm == target:
         return target, "already"
@@ -920,7 +916,7 @@ def verify_written(out: Path, rows, want_tokenizer: bool) -> GGUFReader:
         missing = [k for k in REQUIRED_TOKENIZER_KEYS if back.get_field(k) is None]
         assert not missing, (
             f"the file is missing {missing}, which nllb_vocab_load refuses a "
-            f"file for (trap 32). It will load its weights and then fail to "
+            f"file for. It will load its weights and then fail to "
             f"translate.")
     print(f"[verify] {len(back.tensors)} tensors keep name, order, shape and "
           f"planned type"
@@ -962,15 +958,12 @@ def verify_against(reader: GGUFReader, back: GGUFReader) -> None:
 def requantize(args) -> int:
     """Read a GGUF, write it again with selected tensors at another type.
 
-    Step 10, section 7.0's measurement tool: it exists so "what does Q8_0 on
-    token_embd do to the per-decision headroom" could be answered before any
-    C++ was written. examples/quantize/quantize.cpp supersedes it for SHIPPING files
-    (it has the K-quants and the named mixes); this path stays because it needs
-    no build, it is the only one that can requantise on a machine without a
-    compiler, and step 10's numbers were measured with it.
+    examples/quantize/quantize.cpp supersedes it for SHIPPING files (it has the
+    K-quants and the named mixes); this path stays because it needs no build
+    and is the only one that can requantise on a machine without a compiler.
 
     Two things here are load-bearing and are the reason the metadata is copied
-    by ITERATING the reader rather than by naming keys: since step 8 the GGUF
+    by ITERATING the reader rather than by naming keys: the GGUF
     carries the whole tokenizer - charsmap, merge hash, added tokens, UAX#29
     grapheme tables - and nllb_vocab_load refuses a file missing any of them.
     """
@@ -1026,7 +1019,7 @@ def requantize(args) -> int:
         w.add_key_value(key, field.contents(), vtype, sub_type=sub)
         copied.append(key)
 
-    # THE ASSERTION (trap 32). Not a comment: a check.
+    # THE ASSERTION. Not a comment: a check.
     expected = set(reader.fields) - SKIP_KEYS
     missing, extra = expected - set(copied), set(copied) - expected
     assert not missing, f"metadata keys LOST: {sorted(missing)}"
@@ -1138,7 +1131,7 @@ def convert(args) -> int:
             print("  ! no tokenizer files found - writing weights only. The "
                   "post-write check will REFUSE this file; pass --no-tokenizer "
                   "if that is intended (synthetic fixtures), or point at a "
-                  "snapshot with tokenizer.json (trap 32).",
+                  "snapshot with tokenizer.json.",
                   file=sys.stderr)
         else:
             tokens, scores, toktypes, meta = v
@@ -1386,7 +1379,7 @@ def main() -> int:
     if args.outtype in QUANT_TYPES:
         return fail(
             f"--outtype {args.outtype} would quantise EVERY tensor, token_embd "
-            f"included, and step 10 measured that as the decision that breaks "
+            f"included, and that was measured as the decision that breaks "
             f"first: the ids diverge at 05_german step 23 on a margin of "
             f"1.822e-02. A mix is not a type, so say the mix:\n"
             f"    --outtype f16 --quantize '*' --min-rank 2 --type {args.outtype}\n"

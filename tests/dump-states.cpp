@@ -7,11 +7,8 @@
 // encoder states, teacher-forced decoder states and logits, both generation
 // paths, and every cached step's states and full logits.
 //
-// It was written for step 13 (the ggml-backend port), which replaced the
-// execution model under every graph - ggml_graph_compute_with_ctx on a bump
-// arena became ggml_backend_sched on gallocr - while promising that on the CPU
-// backend not one float changes. It is equally the right instrument for a ggml
-// submodule bump. It links only the public header, so the same source compiles
+// Use it for anything that changes the execution model that is not meant to
+// change arithmetic - e.g. a ggml submodule bump. It links only the public header, so the same source compiles
 // against any version of libnllb that has these entry points.
 //
 //   nllb-dump-states <model.gguf> <ref_dir> <out.bin> [-t N] [--kv-f16] [--lite]
@@ -20,8 +17,8 @@
 // --lite hashes every logits record instead of storing it. Use it on the real
 // checkpoint: a full dump of the nine goldens is gigabytes of logits.
 //
-// Against a pre-step-13 library, compile with -DNLLB_PRE_BACKEND: its loader
-// has no backend parameter. docs/backend.md has the exact commands.
+// Against an older library without backend support, compile with
+// -DNLLB_PRE_BACKEND: its loader has no backend parameter.
 //
 // Output: a sequence of records, each  u32 tag_len | tag | u64 n_bytes | bytes.
 // Tags name what the bytes are, so a diff tool can say WHERE two files part.
@@ -200,9 +197,9 @@ int main(int argc, char ** argv) {
     nllb_model model;
     std::string err;
 #ifdef NLLB_PRE_BACKEND
-    // Compiled against a pre-step-13 libnllb, whose loader has no backend
+    // Compiled against an older libnllb, whose loader has no backend
     // parameter: -DNLLB_PRE_BACKEND. --no-mmap is honoured, --backend is not.
-    if (!backend.empty()) { std::fprintf(stderr, "--backend needs a step-13 build\n"); return 2; }
+    if (!backend.empty()) { std::fprintf(stderr, "--backend needs a build with backend support\n"); return 2; }
     if (!nllb_model_load(model_path, model, err, use_mmap)) {
 #else
     if (!nllb_model_load(model_path, model, err, use_mmap, backend)) {

@@ -129,10 +129,9 @@ void nllb_munmap_file(void * addr, size_t size) {
 
 
 // --------------------------------------------------------------------------
-// execution helpers (step 13)
+// execution helpers
 //
-// Every graph in this file follows the same five moves, and they are the whole
-// of the port:
+// Every graph in this file follows the same five moves:
 //
 //   1. build the graph in a context created with no_alloc = true - it holds
 //      tensor STRUCTS and the graph, never data;
@@ -143,22 +142,20 @@ void nllb_munmap_file(void * addr, size_t size) {
 //   4. ggml_backend_tensor_set the inputs, compute;
 //   5. ggml_backend_tensor_get the outputs.
 //
-// Step 2 is not bookkeeping. gallocr reuses a tensor's memory as soon as its
+// Move 2 is not bookkeeping. gallocr reuses a tensor's memory as soon as its
 // last consumer has run, so a hidden state that is not marked as an output is
 // overwritten by something later in the graph and reads back as garbage - on
-// the CPU backend as much as on a GPU. The bump arena kept every intermediate
-// alive, which is why the old code could read any of them afterwards.
+// the CPU backend as much as on a GPU.
 // --------------------------------------------------------------------------
 
 // Nodes a graph may have, and the scheduler's hash-set size. The 12+12 600M
 // decoder with every hidden state expanded is well under 1000; the headroom is
-// for the parked batching and beam-search work.
+// for batching and beam search.
 constexpr int NLLB_GRAPH_NODES = 8192;
 
 // The graph context holds tensor structs and the graph - ~3.4 MB of metadata
-// at 8192 nodes, most of it never touched. Measured on the first draft: a
-// fresh malloc of it per cached step cost ~100 minor faults and ~0.2 ms, the
-// same page-fault bill trap 17 found for the old data arena. So the caller
+// at 8192 nodes, most of it never touched. A fresh malloc of it per cached
+// step costs ~100 minor faults and ~0.2 ms. So the caller
 // passes a buffer that lives as long as the model (one-shot graphs) or the
 // cache (steps), and it is reused.
 ggml_context * nllb_graph_ctx(std::vector<unsigned char> & meta) {
@@ -237,7 +234,7 @@ void nllb_get_f32(const ggml_tensor * t, std::vector<float> & dst, size_t n) {
 // The causal mask as DATA, [n_kv, Tq]: row j is query position n_past + j and
 // may see keys 0..n_past + j. 0 where visible, -inf where not.
 //
-// Why not ggml_diag_mask_inf, which the CPU path used since step 3: Metal
+// Why not ggml_diag_mask_inf: Metal
 // does not implement it, so under ggml_backend_sched every decoder layer
 // would bounce kq to the CPU and back - two copies and a sync per layer per
 // step. soft_max_ext with a mask is what every backend implements.
@@ -246,11 +243,9 @@ void nllb_get_f32(const ggml_tensor * t, std::vector<float> & dst, size_t n) {
 // the kernel before it was measured: ggml_compute_forward_soft_max_f32 does
 // wp = kq * scale, then wp += slope * mask with slope = 1 when max_bias = 0.
 // With scale = 1 and a mask of exactly 0.0, both are exact no-ops on every
-// finite float; -inf is -inf either way. nllb-dump-states --diff against the
-// pre-port build is the measurement.
+// finite float; -inf is -inf either way.
 //
-// Trap 13 is preserved exactly: an offset too LARGE still masks nothing at
-// Tq == 1. The chunked passes in tests/test-cache.cpp remain the only test of
+// Note: an offset too LARGE still masks nothing at Tq == 1. The chunked passes in tests/test-cache.cpp remain the only test of
 // this function's n_past arithmetic.
 void nllb_causal_mask(std::vector<float> & m, int n_kv, int Tq, int n_past) {
     m.assign((size_t) n_kv * Tq, 0.0f);
@@ -507,8 +502,8 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
 
     if (map_addr) {
         // Wrap the whole mapping in ONE backend buffer and place every tensor
-        // at its offset inside it. On the CPU this is the step-10 mmap path
-        // unchanged in effect; on Metal it is zero-copy too, because Apple
+        // at its offset inside it. On the CPU this is a plain mmap; on Metal
+        // it is zero-copy too, because Apple
         // silicon's GPU reads the same unified memory - the mapped file becomes
         // an MTLBuffer and nothing is uploaded.
         const double   t_fix0   = nllb_now_ms();
@@ -994,12 +989,10 @@ bool nllb_decode(const nllb_model & model,
         // STILL ggml_diag_mask_inf, deliberately, although the cached step
         // moved to a mask tensor (nllb_causal_mask) because Metal does not
         // implement this op. This path is the REFERENCE the cache gate diffs
-        // the cached step against, and the first draft of step 13 routed both
-        // through the one helper - which made tests/test-cache.cpp blind to
-        // any bug in it: a mask offset one too large broke both sides
-        // identically and the gate passed (tests/corrupt_backend.py,
-        // `mask-too-large`). Trap 44 again: a control that shares the defect
-        // is not a control. Keeping ggml's own op here keeps two independent
+        // the cached step against; routing both through one helper would make
+        // tests/test-cache.cpp blind to any bug in it (tests/corrupt_backend.py,
+        // `mask-too-large`): a control that shares the defect is not a
+        // control. Keeping ggml's own op here keeps two independent
         // implementations of the mask. The price is that on Metal this op runs
         // on the CPU fallback - in the reference path only, and it is the one
         // place the fallback is exercised on purpose.
@@ -1227,8 +1220,7 @@ bool nllb_kv_cache_init(const nllb_model & model,
         nllb_kv_cache_release(cache);
         return false;
     }
-    // Deliberately NOT cleared. The step-5 cache lived in a fresh malloc and
-    // read as whatever the allocator handed back; nothing reads a slot before
+    // Deliberately NOT cleared: nothing reads a slot before
     // it is written (the mask hides every slot >= n_kv, and the views never
     // reach past n_kv), and the [arena] and `full` passes in the cache gate
     // would say so if that ever stopped being true.
@@ -1360,7 +1352,7 @@ bool nllb_decode_cached(const nllb_model & model,
     // 0..n_past + j. At Tn == 1 the correct offset masks nothing, and the error
     // this hides is one-sided: an offset that is too LARGE still masks nothing
     // and is invisible to single-token generation, while one that is too small
-    // masks a real key and is caught immediately (trap 13). That asymmetry is
+    // masks a real key and is caught immediately. That asymmetry is
     // why tests/test-cache.cpp feeds the same prefix in chunks as well.
     ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, Tn);
     ggml_set_name(kq_mask, "kq_mask");
@@ -1410,7 +1402,7 @@ bool nllb_decode_cached(const nllb_model & model,
         ggml_tensor * v_dst = ggml_view_3d(ctx, vc, Tn, HD, H,
                 vc->nb[1], vc->nb[2], (size_t) n_past * vc->nb[0]);
 
-        // ORDER MATTERS (trap 15). These copies have no data dependency on the
+        // ORDER MATTERS. These copies have no data dependency on the
         // reads below, so only graph order makes the write happen first: every
         // backend walks gf->nodes in insertion order, and
         // ggml_build_forward_expand appends depth-first. What protects this
@@ -1418,7 +1410,7 @@ bool nllb_decode_cached(const nllb_model & model,
         // `cur` and the logits enter the graph once, at the end - so the copies
         // are the only nodes inserted here and land ahead of every read.
         //
-        // Step 13 adds a reader of the node order that may REORDER it: Metal's
+        // One reader of the node order may REORDER it: Metal's
         // graph_optimize moves nodes to raise concurrency. It is memory-range
         // aware - it will not move a node that reads a range an earlier node
         // writes - so the cpy and the mul_mat over the overlapping cache view
@@ -1739,7 +1731,7 @@ bool nllb_generate(const nllb_model & model,
 }
 
 // ==========================================================================
-// batching (step 11, rebuilt on the step-13 backend). See nllb.h.
+// batching. See nllb.h.
 //
 // Everything below mirrors the single-sequence functions above op for op, with
 // two changes: activations carry all rows ([D, T*B]) and attention carries the
@@ -2153,7 +2145,7 @@ bool nllb_decode_cached_batch(const nllb_model & model,
         ggml_tensor * v_dst = ggml_view_4d(ctx, vc, 1, HD, H, B,
                 vc->nb[1], vc->nb[2], vc->nb[3], (size_t) n_past * vc->nb[0]);
 
-        // ORDER MATTERS (trap 15): the writes before anything reads the cache.
+        // ORDER MATTERS: the writes before anything reads the cache.
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Kp, k_dst));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));
 
@@ -2340,7 +2332,7 @@ bool nllb_generate_batch(const nllb_model & model,
             return false;
         }
         // A finished row is fed pad_id. Nothing reads its output, and its slice
-        // is computed independently of every other row's (trap 43): this is HF
+        // is computed independently of every other row's: this is HF
         // parity, not correctness.
         for (int b = 0; b < B; ++b) feed[b] = done[b] ? hp.pad_id : out.seq[b].ids.back();
 

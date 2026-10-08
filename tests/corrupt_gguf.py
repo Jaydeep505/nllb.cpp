@@ -21,9 +21,9 @@ Writes in place, so work on a copy.
 
 --mode quantize, AND WHY IT IS NOT THE SAME AS models/convert-nllb-to-gguf.py
 -----------------------------------------------------------------
-Step 10 replaces exact id equality with two new assertions - top-k agreement in
-nllb-test-precision and chrF in verify_translation.py - and trap 27 says a gate
-whose sensitivity nobody has measured is not a gate. The other harnesses in this
+Quantised runs replace exact id equality with two assertions - top-k agreement in
+nllb-test-precision and chrF in verify_translation.py - and a gate whose
+sensitivity nobody has measured is not a gate. The other harnesses in this
 repo can break something on purpose and watch the red appear;  this is that tool
 for the quantisation-shaped failure.
 
@@ -53,13 +53,13 @@ That gives a sensitivity LADDER rather than a single red:
         --allow-id-drift
 
 A [topk] gate that stays green at q4_0 on token_embd is not measuring anything,
-whatever it prints at q8_0. Note which tensor: trap 31 says token_embd is the
+whatever it prints at q8_0. Note which tensor: token_embd is the
 one where the error lands at the decoder INPUT and is amplified through twelve
 pre-layernorm blocks, so it is both the most sensitive probe and the one whose
 result transfers least to the others. Probe a mid-stack ffn_down as well.
 
 gguf-py can DEQUANTISE every type and can only QUANTISE Q4_0/Q4_1/Q5_0/Q5_1/
-Q8_0/BF16 (trap 33), which is exactly the asymmetry that makes this easy to get
+Q8_0/BF16, which is exactly the asymmetry that makes this easy to get
 wrong; --qtype is restricted to what round-trips and says so on a bad value.
 """
 
@@ -72,7 +72,7 @@ import numpy as np
 from gguf import GGUFReader, GGMLQuantizationType
 from gguf import quants
 
-# What gguf-py can quantise, not what it can read. Trap 33: the dequantise side
+# What gguf-py can quantise, not what it can read. The dequantise side
 # is complete, which is how a missing quantiser goes unnoticed until it raises.
 QTYPES = {
     "q8_0": GGMLQuantizationType.Q8_0,
@@ -153,8 +153,7 @@ def main() -> int:
         # kill was then INVISIBLE, because the calling script piped this
         # program into `head` and `set -e` inspects only the last command of a
         # pipeline: the gate ran against an UNCORRUPTED file and printed PASS.
-        # Fourth member of the family in docs/dev/handoff.md - a harness lying
-        # toward green - and the cheapest fix for the harness is to check the
+        # A harness lying toward green - the cheapest fix for the harness is to check the
         # exit code, which is now in scripts/step10-measure.sh's probe section.
         # Block quantisers work per row, so chunking rows changes no byte.
         CHUNK = 4096
@@ -171,7 +170,7 @@ def main() -> int:
                 packed = quants.quantize(src, qt)
             except NotImplementedError:
                 raise SystemExit(f"gguf-py cannot quantise to {args.qtype} - "
-                                 f"trap 33. Use the C++ examples/quantize "
+                                 f"use the C++ examples/quantize "
                                  f"for K-quants.")
             back = quants.dequantize(packed, qt).reshape(src.shape)
             d = np.abs(back.astype(np.float32) - src)

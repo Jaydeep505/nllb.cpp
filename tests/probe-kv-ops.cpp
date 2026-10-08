@@ -6,13 +6,13 @@
 // single-token (Tn <= 8) self-attention on the cache VIEWS reads the wrong
 // bytes, and a full-length pass does not. That localises it to one of four
 // ops, and each is tested here in isolation at the cache's real strides, for Tn = 1, 3 and 9 (either side of the mat-vec / mat-mat switch
-// ggml's GPU backends make at 8 columns - trap 48).
+// ggml's GPU backends make at 8 columns).
 //
 //   nllb-probe-kv-ops [backend]          default: the first GPU
 //
 // Exit 0 unless some op is WRONG (>= 1e-2 relative, i.e. read the wrong
-// rows). ~1e-3 is reported as "half": the device ran the matmul in f16 (trap
-// 48), which is a precision fact, not a bug. The table says which op broke.
+// rows). ~1e-3 is reported as "half": the device ran the matmul in f16,
+// which is a precision fact, not a bug. The table says which op broke.
 // The K view has a GAPPED batch stride (heads n_ctx rows apart); a backend
 // whose mul_mat ignores nb[2] shows up as BAD on "mul_mat(K view, q)".
 #include "ggml.h"
@@ -96,7 +96,7 @@ int main(int argc, char ** argv) {
         if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_ACCEL) continue;
         // Case-insensitive, device OR registry name ("cuda" matches "CUDA0").
         // A case-sensitive compare finds nothing and a CI step reading the
-        // table would pass on an EMPTY table - trap 49.
+        // table would pass on an EMPTY table.
         auto lower = [](std::string x) { for (char & ch : x) ch = (char) std::tolower((unsigned char) ch); return x; };
         const std::string w = lower(want);
         const std::string n = lower(ggml_backend_dev_name(d));
@@ -150,11 +150,11 @@ int main(int argc, char ** argv) {
                 }
                 const double rel = amax > 0 ? worst / amax : worst;
                 // Three bands, not two. A GPU backend may run a matmul's
-                // inputs in half (trap 48): ~1e-3 relative is that, and is a
+                // inputs in half: ~1e-3 relative is that, and is a
                 // precision fact rather than a wrong read. A wrong read lands
                 // at O(1), because it is a different row entirely.
                 const bool same = a.size() == b.size();
-                const char * v = !same ? "BAD (size)" : rel < 1e-5 ? "ok" : rel < 1e-2 ? "half (trap 48)" : "BAD";
+                const char * v = !same ? "BAD (size)" : rel < 1e-5 ? "ok" : rel < 1e-2 ? "half" : "BAD";
                 if (!same || rel >= 1e-2) ++n_bad;
                 std::printf("%-22s %4d %6d  %-12.3e %s (%zu floats differ)\n", c.name, Tn, n_past, rel,
                             v, n_diff);

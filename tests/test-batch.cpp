@@ -17,7 +17,7 @@
 //            unpadded row bit-identical, padded rows within tolerance
 //   [eos]    an extra row that stops at step 0 changes nothing for the others BIT-IDENTICAL
 //
-// Why the split (trap 42): a PADDED row cannot be bit-identical to its
+// Why the split: a PADDED row cannot be bit-identical to its
 // unpadded single call - padding raises the softmax length and regroups the
 // same real additions. So the bit-identity claims are made where they are true
 // (equal lengths, the unpadded row, reordering, the filler) and only the padded
@@ -26,14 +26,14 @@
 // one bit - and a leaking mask moves a whole real token's worth.
 //
 // [pad1] is a control for the BATCH DIMENSION, not for the MASK: it builds a
-// mask of its own, so a broken mask inflates it too (trap 44). [pad]'s padded
+// mask of its own, so a broken mask inflates it too. [pad]'s padded
 // rows are therefore held to an ABSOLUTE tolerance, never to "a few times the
 // control".
 //
 // Bit-identity AGAINST THE SINGLE PATH is a CPU claim. On a GPU the batched
 // step picks a different matmul kernel for B columns than for 1 (measured on
 // the M1: mul_mv at B=1, mul_mv_ext at B=2..5, tiled mul_mm above 8 - which
-// also rounds its inputs to half, trap 48). Different kernels sum in a
+// also rounds its inputs to half). Different kernels sum in a
 // different order, so [b1], [equal] and the unpadded row of [pad] are held to
 // a tolerance there instead, and say so:
 //   GPU, rows <= 8   1e-5 relative: f32 reordering lands ~3e-7 on the M1, a
@@ -308,7 +308,7 @@ int main(int argc, char ** argv) {
     const bool f32 = !o.kv_f16 && model.tok_embd->type == GGML_TYPE_F32;
     // Absolute tolerance on a PADDED row's relative logit error. Measured, not
     // derived: padding noise on the shape fixture is ~1e-7 at f32; the real
-    // 600M at f16 reached 2.2e-3 in step 11. The closest mask bug in
+    // 600M at f16 reached 2.2e-3. The closest mask bug in
     // tests/corrupt_batch.py lands orders of magnitude above either.
     const double pad_tol = f32 ? 5e-5 : 5e-3;
     // Single-path comparisons on a GPU: see the header. 0 means bit-identity.

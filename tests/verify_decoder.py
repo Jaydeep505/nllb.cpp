@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The step-3 gate: does the GGUF decoder reproduce HuggingFace?
+"""Decoder gate: does the GGUF decoder reproduce HuggingFace?
 
 Same ladder as verify_encoder.py, one rung up. Run this green BEFORE starting
 on the ggml graph - if numpy-from-GGUF already disagrees with torch, the bug is
@@ -161,4 +161,4 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main())

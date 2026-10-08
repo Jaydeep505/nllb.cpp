@@ -101,7 +101,7 @@ def main() -> int:
 
     def lin(out_dim: int, in_dim: int, name: str):
         # torch stores (out, in); gguf reverses on write, giving ggml
-        # ne = [in, out], which is what ggml_mul_mat wants. Trap 4.
+        # ne = [in, out], which is what ggml_mul_mat wants.
         std = 1.0 / math.sqrt(in_dim)
         w.add_tensor(name, rng.normal(0.0, std, (out_dim, in_dim)).astype(np.float32))
         w.add_tensor(name.replace(".weight", ".bias"),

@@ -88,7 +88,7 @@ struct nllb_model {
     ggml_context * ctx_w = nullptr;   // tensor STRUCTS only; the bytes live in weights_buf
     gguf_context * gguf  = nullptr;
 
-    // ---- execution (step 13: ggml-backend) ------------------------------
+    // ---- execution (ggml-backend) ----------------------------------------
     //
     // `backend` is where the graphs run and where the weights and the KV cache
     // live: Metal when it was asked for and exists, otherwise the CPU. The CPU
@@ -113,10 +113,9 @@ struct nllb_model {
     // The compute allocator for the one-shot graphs (encoder, un-cached
     // decoder, cross-attention cache build). ggml_gallocr underneath: it sizes
     // the buffer from the graph's actual tensor lifetimes and grows it when a
-    // larger graph arrives, so the hand-written arena formulas of steps 2-6 are
-    // gone. It is mutable because it is a workspace, not model state - and it
-    // makes one nllb_model unsafe to use from two threads at once, which the
-    // bump arenas were not. Use one model per thread.
+    // larger graph arrives. It is mutable because it is a workspace, not model
+    // state - and it makes one nllb_model unsafe to use from two threads at
+    // once. Use one model per thread.
     mutable ggml_backend_sched * sched = nullptr;
     // Metadata memory for those graphs' contexts (tensor structs + the graph,
     // never data), kept so a call does not malloc ~3 MB of it each time.
@@ -147,8 +146,8 @@ struct nllb_encode_result {
 // use_mmap maps the file read-only and points every weight tensor into the
 // mapping, instead of copying the tensor blob onto the heap. The weights are
 // never written, so the two paths are BIT-IDENTICAL by construction and that
-// is the assertion tests/test-mmap.cpp makes - it is an allocation change, in
-// the same family as the graph arena reuse in step 6, not a numerical one.
+// is the assertion tests/test-mmap.cpp makes - it is an allocation change,
+// not a numerical one.
 //
 // What it buys is not FLOPs: it removes a memcpy of the whole tensor blob
 // (~700 ms of the f32 file's 1100 ms load; the rest is the tokenizer), makes
@@ -159,10 +158,8 @@ struct nllb_encode_result {
 // or the file's alignment does not permit it. Nothing above this call has to
 // care which happened.
 //
-// `backend` picks where the graphs run (step 13):
-//   "cpu"          ggml's CPU backend. The configuration every claim in
-//                  docs/dev/handoff.md was measured on, and bit-identical to the
-//                  pre-backend CPU path (nllb-dump-states --diff).
+// `backend` picks where the graphs run:
+//   "cpu"          ggml's CPU backend. The reference configuration.
 //   "metal", "gpu" the first GPU device in this build; FAILS if there is none.
 //   "auto"         the first GPU device if there is one, else the CPU.
 //   a device name  as ggml names it, e.g. "MTL0", "CUDA0", "CPU".
@@ -264,7 +261,7 @@ bool nllb_decode(const nllb_model & model,
 // computed once per source sentence rather than once per token.
 //
 // WHAT THIS IS DIFFED AGAINST. Not torch. The un-cached path is already proven
-// exact against HF generate() on the real 600M (step 4), so the cache is
+// exact against HF generate() on the real 600M, so the cache is
 // verified against *it* - tests/test-cache.cpp. That keeps a cache bug from
 // hiding behind a graph bug and vice versa, and it means the gate needs no
 // goldens, no python and no download.
@@ -276,7 +273,7 @@ bool nllb_decode(const nllb_model & model,
 // teacher-forced NLLB_POS_CUMSUM rule cannot be reproduced incrementally - the
 // running count is a property of the whole prefix - and asking for it is a
 // symptom of diffing against the wrong reference, so it is rejected rather than
-// approximated. See trap 12 in docs/dev/handoff.md.
+// approximated.
 //
 // Layout: everything is stored in the shape attention consumes, so a step does
 // no permuting and no copying of the history at all.
@@ -292,19 +289,18 @@ bool nllb_decode(const nllb_model & model,
 // f16 halves the cache and halves the bytes attention reads per step. It is NOT
 // free and it is not the same kind of change as f16 weights: K and V are
 // ACTIVATIONS on a pre-layernorm residual stream that reaches ~4200 by block 4
-// and is never renormalised, so rounding them costs headroom that step 7
-// measured at only 1.50x to begin with.
+// and is never renormalised, so rounding them costs headroom, which is only
+// ~1.50x to begin with.
 //
 // AND IT CHANGES WHAT tests/test-cache.cpp CAN ASSERT, which is the part to
 // read before turning it on. `full = exact` - one cached call over the whole
 // prefix, bit-identical to the un-cached pass - is the project's strongest
 // cache claim, and it holds because both sides do the same arithmetic on the
 // same bytes. At NLLB_KV_F16 the cached side rounds K and V and the un-cached
-// side does not, so the two CANNOT be bit-identical and asking for it would be
-// trap 19 in a new costume. The gate therefore keeps `full = exact` as a
-// required assertion at NLLB_KV_F32 and, under --kv-f16, runs BOTH and reports
+// side does not, so the two CANNOT be bit-identical. The gate therefore keeps
+// `full = exact` as a required assertion at NLLB_KV_F32 and, under --kv-f16, runs BOTH and reports
 // the f16 difference next to the f32 one. Red at f32 is a cache bug; red only
-// at f16 is f16. See trap 37.
+// at f16 is f16.
 enum nllb_kv_type {
     NLLB_KV_F32 = 0,
     NLLB_KV_F16 = 1,
@@ -342,25 +338,22 @@ struct nllb_kv_cache {
     std::vector<ggml_tensor *> k_cross;   // per layer, [HD, n_src, H]
     std::vector<ggml_tensor *> v_cross;   // per layer, [n_src, HD, H]  (transposed)
 
-    // The per-step compute allocator, kept across steps. It replaces step 6's
-    // bump arena (`scratch`), and what it holds is the same kind of thing: NOT
+    // The per-step compute allocator, kept across steps. It is NOT
     // cache state - no K or V, and nllb_kv_cache_reset does not touch it - but
     // the cache is the object that already lives exactly as long as the decode
     // loop, which is the lifetime this workspace wants.
     //
-    // It is a ggml_backend_sched, so underneath it is ggml_gallocr, which is
-    // the point of step 13's memory argument: the buffer is sized from the
+    // It is a ggml_backend_sched, so underneath it is ggml_gallocr: the buffer
+    // is sized from the
     // step graph's real tensor lifetimes, reusing memory between tensors that
     // are never live at once, instead of from a formula with a 64 MB constant
-    // in it. It grows when n_kv grows past what it was sized for, so trap 18's
-    // "exact fit reallocates every step" does not arise - gallocr only
+    // in it. It grows when n_kv grows past what it was sized for; gallocr only
     // reallocates when the graph genuinely needs more.
     //
     // reuse_scratch = false builds a FRESH scheduler every step and frees it
     // after. That is the [arena] pass in tests/test-cache.cpp, and it matters
-    // more under gallocr than it did under the bump arena: gallocr reuses
-    // memory WITHIN a graph as well as across steps, so an op reading a tensor
-    // it never wrote now sees some other tensor's values even on step one.
+    // because gallocr reuses memory WITHIN a graph as well as across steps, so
+    // an op reading a tensor it never wrote sees some other tensor's values even on step one.
     ggml_backend_sched * sched = nullptr;
     std::vector<unsigned char> graph_meta;   // the step graph's metadata, reused too
     bool   reuse_scratch = true;
@@ -380,8 +373,7 @@ struct nllb_kv_cache {
 // n_ctx_cache is the longest decoder sequence this cache will hold, counting
 // the decoder_start token. Asking for more than the model's n_ctx is refused.
 //
-// kv_type defaults to NLLB_KV_F32, which is the configuration every claim in
-// docs/dev/handoff.md was measured on. Passing NLLB_KV_F16 halves the cache and
+// kv_type defaults to NLLB_KV_F32, the reference configuration. Passing NLLB_KV_F16 halves the cache and
 // costs headroom - see the note on nllb_kv_type above.
 bool nllb_kv_cache_init(const nllb_model & model,
                         const nllb_encode_result & enc,
@@ -396,20 +388,16 @@ bool nllb_kv_cache_init(const nllb_model & model,
 void nllb_kv_cache_reset(nllb_kv_cache & cache);
 
 // Per-call phase breakdown, in milliseconds. Optional: pass nullptr and nothing
-// is measured. It exists because step 5 closed with an *inference* about where
-// the cached step's 38 ms/token goes - "most likely the per-step ggml_init" -
-// derived from weight sizes rather than from a clock, and acting on arithmetic
-// like that is how an optimisation gets aimed at the wrong line.
+// is measured.
 //
 // Read `alloc` and `compute` together. A freshly allocated compute buffer is
 // untouched memory, so its page-fault cost is NOT in `alloc` - it lands inside
-// `compute`, mixed in with the arithmetic (trap 17). `scratch_reused` says
+// `compute`, mixed in with the arithmetic. `scratch_reused` says
 // which of the two the numbers describe: false means a fresh scheduler per
 // step, so those faults are still hiding in `compute`; true means the buffer
 // was warm. The difference between two runs is the page-fault bill.
 //
-// Step 13 changed what two fields mean, not their names: `alloc` is now
-// ggml_backend_sched_alloc_graph (graph split + gallocr placement, which can
+// `alloc` is ggml_backend_sched_alloc_graph (graph split + gallocr placement, which can
 // grow the buffer), and `arena` is the scheduler's real compute buffer size,
 // summed over backends - a number the allocator computed, not a formula.
 struct nllb_step_timing {
@@ -473,7 +461,7 @@ struct nllb_generate_params {
     int32_t dec_start_id   = -1;   // -1 -> model's (eos for NLLB, not bos)
     // Off by default, deliberately. The un-cached path is the one proven exact
     // against HF, so it stays the reference the cache is diffed against; a
-    // default that silently switched the reference out from under the step-4
+    // default that silently switched the reference out from under the HF-parity
     // gate would make that gate stop testing what its name says.
     bool    use_cache      = false;
     // Ignored unless use_cache. NLLB_KV_F32 is the default for the same reason
@@ -534,12 +522,12 @@ bool nllb_generate(const nllb_model & model,
                    std::string & err);
 
 // --------------------------------------------------------------------------
-// batching (step 11, rebuilt on the step-13 backend)
+// batching
 //
 // B sources through ONE encoder pass and ONE decoder step per token. The
 // decoder step at B = 1 reads ~0.9 GB of weights to produce one token; at B it
 // reads the same bytes for B tokens, so ms/token falls until arithmetic, not
-// bandwidth, is the limit. Step 11 measured 2.67x at B = 8 on the shape fixture.
+// bandwidth, is the limit. Measured 2.67x at B = 8 on the shape fixture.
 //
 // These are NEW functions next to the single-sequence ones, not a rewrite of
 // them: nllb_encode / nllb_kv_cache_init / nllb_decode_cached / nllb_generate
@@ -550,7 +538,7 @@ bool nllb_generate(const nllb_model & model,
 // Layout. Sources are RIGHT-padded to the longest in the batch (Ts). Right,
 // not left: the encoder position rule is cumsum(mask)*mask + pad_id, so a pad
 // shifts every LATER position; pads at the end have nothing after them. Real
-// tokens keep the positions they would have alone (traps 2 and 12).
+// tokens keep the positions they would have alone.
 //
 //   activations   [D, Ts*B] (encoder), [D, B] (decoder step) - so every weight
 //                 matmul is ONE GEMM over all rows, which is the whole point
@@ -568,8 +556,7 @@ bool nllb_generate(const nllb_model & model,
 // mask almost-right instead of loudly wrong.
 //
 // A padded row cannot be bit-identical to its unpadded single call: padding
-// raises the softmax length and regroups the same real additions (trap 42,
-// which is trap 16 again). An UNPADDED row - and every row of an equal-length
+// raises the softmax length and regroups the same real additions. An UNPADDED row - and every row of an equal-length
 // batch - is bit-identical on the CPU, and tests/test-batch.cpp asserts that.
 // --------------------------------------------------------------------------
 
@@ -627,8 +614,7 @@ struct nllb_generate_batch_result {
     int32_t n_src       = 0;                 // padded source length
     // Decoder token-slots computed (steps * B) and the ones that produced a kept
     // token. The difference is what one long row costs the others: finished
-    // rows are not dropped from the batch (not implemented, deliberately - see
-    // docs/dev/step11-batching.md).
+    // rows are not dropped from the batch (not implemented, deliberately).
     int64_t token_slots = 0;
     int64_t tokens_kept = 0;
 };
@@ -649,7 +635,7 @@ bool nllb_generate_batch(const nllb_model & model,
                          bool (*on_row_token)(int row, int32_t token, void * user) = nullptr,
                          void * on_row_token_user = nullptr);
 
-// Scheduling (step 11's three rules): sort by length, budget by PADDED tokens
+// Scheduling (three rules): sort by length, budget by PADDED tokens
 // (group size * longest member) as well as by count, and return INPUT INDICES
 // so the caller restores its own order. A single source over max_tokens still
 // gets a group of its own: the budget is a hint, not a refusal.

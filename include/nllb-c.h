@@ -36,7 +36,7 @@ struct nllb_ctx_params {
      * present FAILS rather than falling back - that is the library contract. */
     const char * backend;
     /* Map the GGUF instead of reading it. On iOS this is the difference
-     * between ~0.25 GB and ~2.7 GB of phys_footprint (trap 36), and jetsam
+     * between ~0.25 GB and ~2.7 GB of phys_footprint, and jetsam
      * kills by footprint. Leave it on. */
     int use_mmap;
     /* CPU threads. On Metal they only run the ops Metal lacks. <= 0 means 4. */

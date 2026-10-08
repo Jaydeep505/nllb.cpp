@@ -2,14 +2,7 @@
 //
 //   ./build/bin/nllb-bench <model.gguf> [-t 8] [--src 24] [--steps 64]
 //
-// Step 5 ended with an arithmetic argument rather than a measurement: fitting
-// total = n*L + d*n^2/2 to two un-cached cases gave a fixed per-step cost of
-// ~12 ms, the cached path runs at ~38, and the 22 ms gap was attributed to
-// nllb_decode_cached building a fresh ~72 MB ggml arena every token. That is a
-// plausible story told entirely from weight sizes. This tool is the clock.
-//
-// It reports four things, and the third and fourth are the ones that decide
-// whether ggml_gallocr is worth writing:
+// It reports four things:
 //
 //   1. The phase split of one cached step - arena, graph build, compute,
 //      readback, free. Anything not in `compute` is overhead by definition.
@@ -23,8 +16,7 @@
 //      nullptr mallocs but does not touch, so first-touch faults land inside
 //      ggml_graph_compute and are invisible in the phase split above. Running
 //      the identical graph a second time through a reused context prices them
-//      directly - and that is the ceiling on what a reused graph could win,
-//      measured before writing one.
+//      directly.
 //
 // The weights are irrelevant here, so this runs happily on
 // tests/make_shape_model.py output. What matters is the SHAPE: on the 600M the
@@ -253,12 +245,9 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr, "cache init failed: %s\n", err.c_str());
             return 2;
         }
-        // The code as it ships: the step allocator reused across steps. Until
-        // step 13 this section ran with a fresh arena per step, because that
-        // was the step-5 baseline; since the port the reused ggml_backend_sched
-        // IS the code, and a fresh one per step is a test configuration (the
-        // [arena] pass) that costs more than a fresh bump arena did - it builds
-        // the scheduler's hash sets every step. Section [2] prices the two.
+        // The code as it ships: the step allocator reused across steps. A
+        // fresh one per step is a test configuration (the [arena] pass) - it
+        // builds the scheduler's hash sets every step. Section [2] prices the two.
         cache.reuse_scratch = true;
         run_t r;
         const long f0 = minor_faults();
@@ -390,8 +379,7 @@ int main(int argc, char ** argv) {
                     "what ggml_gallocr plus a reused graph\n"
                     "     could remove, and it is bounded by a number you can "
                     "read off this line rather than\n"
-                    "     inferred from weight sizes - which is how step 5 got "
-                    "it wrong by an order of magnitude.\n",
+                    "     inferred from weight sizes.\n",
                     out_cold, out_warm,
                     base > 0.0 ? 100.0 * out_cold / base : 0.0,
                     base > 0.0 ? 100.0 * out_warm / base : 0.0);

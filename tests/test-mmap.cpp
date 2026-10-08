@@ -9,9 +9,8 @@
 // ids, printed text - is identical BY CONSTRUCTION, and no amount of decoding
 // could show otherwise. So this gate compares the bytes and stops.
 //
-// That puts it in the same family as the graph-arena reuse in step 6, which
-// also asserted bit-identity rather than measuring a difference, and it earns
-// its place for the same reason: an allocation change that is "obviously"
+// It asserts bit-identity rather than measuring a difference because an
+// allocation change that is "obviously"
 // equivalent is exactly the kind that is silently wrong. Three ways this can
 // break, all of which produce plausible numbers rather than a crash:
 //
@@ -88,8 +87,8 @@ int main(int argc, char ** argv) {
         for (int64_t i = 0; i < gguf_get_n_tensors(mapped.gguf); ++i) {
             ggml_tensor * t = ggml_get_tensor(mapped.ctx_w,
                                               gguf_get_tensor_name(mapped.gguf, i));
-            // Host pointers only when the backend buffer WRAPS the mapping
-            // (step 13): true on the CPU and on Metal, and then ->data is the
+            // Host pointers only when the backend buffer WRAPS the mapping:
+            // true on the CPU and on Metal, and then ->data is the
             // address inside the mapping. Anything else is a device handle.
             if (!t || !t->data || !mapped.weights_host_ptr) continue;
             const unsigned char * p = (const unsigned char *) t->data;
@@ -118,14 +117,12 @@ int main(int argc, char ** argv) {
 
     // A fallback is not a failure of the model, but it IS a failure of this
     // gate: there is nothing left to compare, and reporting PASS would say
-    // "mmap is correct here" about a run in which mmap never happened. The
-    // step-4 SKIP lesson.
+    // "mmap is correct here" about a run in which mmap never happened.
     if (!mapped.mapped) {
         // Three causes. Name the backend, because
         // on a device that cannot wrap host memory this gate is red for a
         // reason that is not a defect and the message decides whether that
-        // costs five seconds or an afternoon - trap 49's lesson, which is that
-        // the fix starts with printing what you DID find.
+        // costs five seconds or an afternoon.
         std::fprintf(stderr,
             "the mmap path fell back to reading, so the two loads are the same\n"
             "code and this comparison is vacuous. On backend '%s'. Causes, in\n"
@@ -163,7 +160,7 @@ int main(int argc, char ** argv) {
         }
         const size_t nb = ggml_nbytes(a);
         total += nb;
-        // Through the backend, not through ->data: since step 13 the read
+        // Through the backend, not through ->data: the read
         // path copies the weights into a backend buffer, which on a GPU is
         // device memory that the host cannot dereference.
         std::vector<unsigned char> va(nb), vb(nb);

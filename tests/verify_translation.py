@@ -31,17 +31,15 @@ FOUR PASSES, because they have different blind spots:
             exit non-zero. A CLI that shrugs at those translates something
             other than what was asked for.
 
-A MISSING GOLDEN FILE IS A FAILURE, not a skip - see the step-4 lesson in
-docs/dev/handoff.md, where a SKIP that was not a FAIL meant deleting eight of
-nine goldens still printed PASS. Use --no-golden / --no-stdin / --no-wiring /
+A MISSING GOLDEN FILE IS A FAILURE, not a skip - otherwise deleting the
+goldens would still print PASS. Use --no-golden / --no-stdin / --no-wiring /
 --no-errors to leave a pass out on purpose.
 
 --allow-id-drift, AND WHY IT IS NOT A LOOSER TOLERANCE
 ------------------------------------------------------
 Byte equality against HuggingFace is an f16-era assertion, exactly as exact id
-equality is in nllb-test-precision (trap 30). At Q8_0 one greedy decision on the
-real 600M has already flipped, and the sentence that came out was fine - better,
-even, though see the handoff for why not to read anything into n = 1. A gate
+equality is in nllb-test-precision. At Q8_0 one greedy decision on the
+real 600M has already flipped, and the sentence that came out was fine. A gate
 that fails on that reports "quantisation happened", which is not a finding.
 
 The reply is NOT to compare strings with a fuzzy string comparison. It is to
@@ -51,8 +49,8 @@ state a DIFFERENT claim and make the operator ask for it by name:
                        must stay within chrF of it, per segment and over the
                        corpus.
 
-Without the flag nothing changes: byte equality, and every f32/f16 result in
-docs/dev/handoff.md reproduces. The flag exists so that a green line always names
+Without the flag nothing changes: byte equality, and every f32/f16 result
+reproduces. The flag exists so that a green line always names
 the claim it is green about - "identical to HF" and "close to HF" are different
 products and a log six months old cannot tell them apart otherwise.
 
@@ -138,9 +136,7 @@ def chrf_score(stats, beta: float = CHRF_BETA) -> float:
     sacrebleu's source rather than by recalling the paper, is EFFECTIVE ORDER:
     an order in which either side has no n-grams at all does not contribute and
     is not counted in the divisor. Averaging over all six instead caps a
-    three-character segment at 50, because orders 4-6 are empty for it - which
-    is what the first draft here did, and it disagreed with sacrebleu by 50
-    points on a corpus of nine short sentences before the cross-check caught it.
+    three-character segment at 50, because orders 4-6 are empty for it.
 
     The consequence to know: two EMPTY strings have no orders at all, so the
     effective order is zero and the score is 0.0, not 100. That is sacrebleu's
@@ -249,10 +245,10 @@ def parse_ids(stderr: str):
 
 
 # --backend NAME, passed to every invocation. Empty means the CLI's own
-# default, which since step 13 is "auto" - i.e. Metal on a Mac built with it.
+# default, which is "auto" - i.e. Metal on a Mac built with it.
 # That is deliberate (this gate tests the PRODUCT), but it means the same
 # command tests different kernels on different machines, so the header line
-# prints which backend actually ran and step 13's acceptance runs it both ways.
+# prints which backend actually ran. Run it both ways.
 BACKEND: list[str] = []
 
 
@@ -284,9 +280,9 @@ def diagnose(cli, model, case, base_args, threads, got):
                      f"len got={len(got_ids)} want={len(want_ids)}")
         if k == 0:
             lines.append("      index 0 is the decoder start token (eos, not "
-                         "bos - trap 8).")
+                         "bos).")
         elif k == 1:
-            lines.append("      index 1 is the FORCED TARGET CODE (trap 10). "
+            lines.append("      index 1 is the FORCED TARGET CODE. "
                          "Check --tgt and forced_bos_id.")
         else:
             lines.append("      this is an ids-level divergence: run "
@@ -347,7 +343,7 @@ def main() -> int:
     print(f"dumped from: {header.get('model')}  num_beams="
           f"{header.get('num_beams')} (checkpoint default: "
           f"{header.get('generation_config_num_beams')})")
-    # Which kernels this run is actually testing (step 13). One -v call; the
+    # Which kernels this run is actually testing. One -v call; the
     # CLI prints `backend: NAME` on stderr. A stand-in that does not is fine.
     if cases:
         pb = run(args.cli, args.model, base + ["-v", cases[0]["source"]], threads=args.threads)

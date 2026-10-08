@@ -71,8 +71,8 @@ nllb_ctx * nllb_ctx_init(const char * model_path, nllb_ctx_params params,
         delete ctx;
         return nullptr;
     }
-    // The tokenizer comes out of the SAME file (step 8). A GGUF converted
-    // before step 8 is refused here with the name of the missing key.
+    // The tokenizer comes out of the SAME file. A GGUF without the tokenizer
+    // keys is refused here with the name of the missing key.
     if (!nllb_vocab_load_from_gguf(ctx->model.gguf, ctx->vocab, e)) {
         set_err(err, err_len, "tokenizer load failed: " + e);
         delete ctx;
@@ -114,7 +114,7 @@ void nllb_string_free(char * s) { std::free(s); }
 namespace {
 
 // State the per-token hook needs. Decoding the whole prefix each step is
-// O(n) in the line length and measured at 0.03 ms for 76 tokens (step 9), so
+// O(n) in the line length and measured at 0.03 ms for 76 tokens, so
 // streaming costs nothing next to an ~18 ms decoder step.
 struct stream_state {
     nllb_ctx *                ctx       = nullptr;
@@ -183,7 +183,7 @@ extern "C" int nllb_translate(nllb_ctx * ctx, const char * text,
     nllb_generate_params gp;
     gp.max_new_tokens = params.max_new_tokens > 0 ? params.max_new_tokens : 256;
     gp.use_cache      = true;          // the CLI default; ids identical to un-cached
-    gp.kv_type        = NLLB_KV_F32;   // f16 KV is 3% SLOWER and costs headroom (trap 37)
+    gp.kv_type        = NLLB_KV_F32;   // f16 KV is 3% SLOWER and costs headroom
     gp.forced_bos_id  = tgt_id;
     gp.on_token       = on_token;
 

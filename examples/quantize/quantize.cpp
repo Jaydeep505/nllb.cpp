@@ -7,19 +7,18 @@
 //
 // WHY THIS EXISTS AND models/convert-nllb-to-gguf.py DOES NOT REPLACE IT.
 // gguf-py's `quants.quantize` raises NotImplementedError for Q2_K..Q6_K and the
-// whole IQ family while DEQUANTISING all of them perfectly - trap 33, and that
-// asymmetry is exactly how you fail to notice. Q5_K is step 10's stated target,
+// whole IQ family while DEQUANTISING all of them perfectly, and that
+// asymmetry is exactly how you fail to notice. Q5_K is the target,
 // so the Python tool's ceiling is Q8_0/Q5_0/Q4_0 and something has to call
 // ggml_quantize_chunk. Reimplementing a K-quant's block layout in numpy would
-// be a second implementation of a bit-exact format, which is the class of bug
-// trap 25 exists to prevent elsewhere in this repo.
+// be a second implementation of a bit-exact format.
 //
 // A MIX IS NOT A TYPE, which is the other thing this tool gets right and the
 // obvious `--type q5_k` would get wrong. llama.cpp's Q4_K_M and friends are
 // PER-TENSOR POLICIES: most weights at the named type, a few sensitive ones a
 // step up. Here the sensitive one is known and measured rather than inherited:
 //
-//   trap 31 - token_embd.weight is TIED. One tensor serves both
+//   token_embd.weight is TIED. One tensor serves both
 //   ggml_get_rows and the lm_head, so quantising "the output projection" also
 //   quantises every embedding fed to block 0, and input error is amplified
 //   through twelve pre-layernorm blocks while output error is not amplified at
@@ -28,7 +27,7 @@
 //   26.4x for quantising everything. It is the first tensor to protect.
 //
 //   position_embd.weight is NEVER quantised by any mix here. It is 4 MB, it is
-//   not learned - the converter recomputes it (trap 1) - and its rows are
+//   not learned - the converter recomputes it - and its rows are
 //   sinusoids whose whole job is to be distinguishable from one another. Pay
 //   4 MB rather than find out. --tensor-type overrides it if you want to
 //   measure that, which is the point of the override existing.
@@ -37,7 +36,7 @@
 //   every bias, ~2 MB in total, and it is what `--min-rank 2` enforces on the
 //   Python side. K-quants need ne[0] % 256 == 0 anyway.
 //
-// TRAP 32 IS THE FAILURE MODE THAT MATTERS. Since step 8 the GGUF carries the
+// LOST METADATA IS THE FAILURE MODE THAT MATTERS. The GGUF carries the
 // tokenizer - vocabulary, precompiled charsmap, merge hash, added tokens, the
 // UAX#29 grapheme tables - and nllb_vocab_load, hence nllb-cli, REFUSES a file
 // missing any of them. A quantiser that enumerates metadata keys by hand
@@ -108,7 +107,7 @@ struct mix_t {
 };
 
 const mix_t MIXES[] = {
-    { "f16",   GGML_TYPE_F16,  "every 2-D weight f16. The step 7 baseline; "
+    { "f16",   GGML_TYPE_F16,  "every 2-D weight f16. The baseline; "
                               "useful for testing this tool against a file "
                               "the converter can also produce.",
       { { nullptr, GGML_TYPE_F32 } } },
@@ -117,9 +116,9 @@ const mix_t MIXES[] = {
                               "models/convert-nllb-to-gguf.py --quantize '*' --min-rank 2.",
       { { nullptr, GGML_TYPE_F32 } } },
 
-    { "q8emb", GGML_TYPE_F16,  "token_embd Q8_0, everything else f16. The "
-                              "step 10 q8emb file, and the one that isolates "
-                              "trap 31.",
+    { "q8emb", GGML_TYPE_F16,  "token_embd Q8_0, everything else f16. "
+                              "Isolates the effect of quantising the tied "
+                              "embedding.",
       { { "token_embd", GGML_TYPE_Q8_0 }, { nullptr, GGML_TYPE_F32 } } },
 
     { "q6_k",  GGML_TYPE_Q6_K, "every 2-D weight Q6_K. The gentlest K-quant "
@@ -134,7 +133,7 @@ const mix_t MIXES[] = {
       { { nullptr, GGML_TYPE_F32 } } },
 
     { "q5_k_m", GGML_TYPE_Q5_K, "Q5_K, with token_embd and every ffn_down at "
-                               "Q6_K. token_embd for trap 31; ffn_down "
+                               "Q6_K. token_embd because it is tied; ffn_down "
                                "because it reads the relu output, whose "
                                "dynamic range is one-sided and wide.",
       { { "token_embd", GGML_TYPE_Q6_K },
@@ -166,12 +165,8 @@ bool contains(const std::string & hay, const std::string & needle) {
 
 // llama.cpp's LLAMA_FTYPE numbering, for general.file_type. It is a LABEL: a
 // mix is not a format and the per-tensor types in the file are the truth. It is
-// written anyway because it is convention and because leaving it out is what
-// models/convert-nllb-to-gguf.py did by accident for the whole of step 10 - the key
-// was on its "the writer owns this" list and the writer was never told to
-// produce it, so every requantised file silently had no file_type and the
-// trap-32 assertion could not see the hole because the key was excluded from
-// the comparison. A key you exclude from a copy is a key you must then check.
+// written anyway because it is convention. It is excluded from the metadata
+// comparison, and a key you exclude from a copy is a key you must then check.
 uint32_t ftype_for(ggml_type t) {
     switch (t) {
         case GGML_TYPE_F32:  return 0;
@@ -349,7 +344,7 @@ int main(int argc, char ** argv) {
             if (contains(n, o.first)) { e.to = o.second; e.why = nullptr; }
         }
 
-        // Trap 34: every NLLB weight row is 1024 or 4096 long, so every
+        // Every NLLB weight row is 1024 or 4096 long, so every
         // K-quant is legal. That is luck, not design - d_model = 1536 would
         // need padding - so it is asserted rather than assumed, and the message
         // says which tensor and what its row length is.
@@ -358,7 +353,7 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr,
                 "%s: %" PRId64 " elements per row is not a multiple of %s's "
                 "block size %" PRId64 ".\n"
-                "  Trap 34 says this cannot happen for NLLB (every row is 1024 "
+                "  This cannot happen for NLLB (every row is 1024 "
                 "or 4096), so either\n"
                 "  this is not an NLLB checkpoint or the geometry changed. "
                 "Padding is NOT the answer:\n"
@@ -439,8 +434,8 @@ int main(int argc, char ** argv) {
 
     gguf_context * gg_out = gguf_init_empty();
     // ONE call. Not a loop over key names, not a list of keys this tool knows
-    // about. Trap 32: the tokenizer is in here, and a key this tool has never
-    // heard of is exactly the key a future step will add.
+    // about. The tokenizer is in here, and a key this tool has never
+    // heard of is exactly the key a future converter will add.
     gguf_set_kv(gg_out, gg_in);
 
     ggml_type dominant = mix->base;
@@ -550,7 +545,7 @@ int main(int argc, char ** argv) {
     ggml_free(ctx_out);
 
     // ---------------------------------------------------------------- verify
-    // Trap 32 as an assertion. Re-open what was written and compare it with the
+    // Metadata survival as an assertion. Re-open what was written and compare it with the
     // input: every key present, same type, same value; every tensor present, in
     // the same order, with the same shape. The two keys that are allowed to
     // differ are named explicitly rather than skipped by a wildcard.
@@ -645,7 +640,7 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr,
                     "[verify] FAILED: %d key(s) lost, %d key(s) wrong, %d "
                     "tensor problem(s).\n"
-                    "  Trap 32: since step 8 the tokenizer lives in this file "
+                    "  The tokenizer lives in this file "
                     "and nllb_vocab_load\n"
                     "  refuses a file missing any of it, so the next thing that "
                     "would have happened\n"
@@ -659,7 +654,7 @@ int main(int argc, char ** argv) {
                             "ok\n", n_same, n_tensors);
                 std::printf("\nNOW RUN, in this order:\n"
                             "  ./build/bin/nllb-cli -m %s --list-langs | wc -l"
-                            "        # expect 202 (trap 32)\n"
+                            "        # expect 202\n"
                             "  ./build/bin/nllb-test-cache %s ref/ -t 8"
                             "             # full=exact at any weight type\n"
                             "  ./build/bin/nllb-test-precision <f32>.gguf %s "
