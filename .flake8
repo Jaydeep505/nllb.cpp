@@ -1,0 +1,26 @@
+[flake8]
+# Same idea as llama.cpp's .flake8: pyflakes errors (F*) always fail; the
+# purely cosmetic pycodestyle rules below are off because the code aligns
+# columns on purpose.
+max-line-length = 160
+extend-ignore =
+    E203,
+    E221,
+    E222,
+    E241,
+    E272,
+    E306,
+    E701,
+    E702,
+    E731,
+    E741,
+    W503,
+    W504
+exclude =
+    .git,
+    build,
+    build-*,
+    ggml,
+    venv,
+    .venv,
+    models/nllb-600M

@@ -537,6 +537,17 @@ int main(int argc, char ** argv) {
     svr.new_task_queue = [&] { return new httplib::ThreadPool((size_t) sp.http_threads); };
     svr.set_read_timeout(sp.read_timeout);
     svr.set_write_timeout(sp.write_timeout);
+    // httplib's default socket options include SO_REUSEPORT on Linux, which lets
+    // a second nllb-server bind the SAME port and silently share its traffic.
+    // SO_REUSEADDR alone keeps fast restarts working and makes that a bind error.
+    svr.set_socket_options([](socket_t sock) {
+#ifndef _WIN32
+        int yes = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
+#else
+        (void) sock;
+#endif
+    });
     svr.set_payload_max_length(1 << 20);   // 1 MiB of JSON is far beyond max_lines * max_chars
     svr.set_default_headers({
         {"Server",                       "nllb.cpp"},

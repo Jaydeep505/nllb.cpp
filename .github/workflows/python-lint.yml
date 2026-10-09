@@ -1,0 +1,45 @@
+# Lint every Python file. Cheap (< 1 min, no build, no torch), and it only
+# runs when a .py file or the lint config changes.
+#
+# Run the same thing locally before pushing:
+#   pip install flake8 && flake8 .
+
+name: python-lint
+
+on:
+  push:
+    paths: ['**/*.py', '.flake8', '.github/workflows/python-lint.yml']
+  pull_request:
+    paths: ['**/*.py', '.flake8', '.github/workflows/python-lint.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: python-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  flake8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: flake8
+        # Config in .flake8: pyflakes errors (unused imports, undefined names,
+        # unused variables) fail the run; column-alignment style is allowed.
+        run: flake8 . --count --show-source --statistics
+
+      - name: Every script byte-compiles
+        # Catches syntax that only a newer Python accepts, which flake8 run
+        # on 3.11 would also catch - but this one names the file plainly.
+        run: python -m compileall -q scripts tests models

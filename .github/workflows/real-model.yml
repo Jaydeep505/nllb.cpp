@@ -186,6 +186,17 @@ jobs:
           python tests/verify_translation.py ./build/bin/nllb-cli \
               models/nllb-600M-f32.gguf ref/ -t 4
 
+      - name: Server gate - nllb-server output must equal nllb-cli
+        # tests/server/test_api.py (the HTTP contract) plus test_real.py: one
+        # line, several targets, a padded batch and concurrent mixed pairs, each
+        # compared byte for byte with nllb-cli on the CPU backend.
+        env:
+          NLLB_SERVER_BIN: build/bin/nllb-server
+          NLLB_SERVER_MODEL: models/nllb-600M-f32.gguf
+        run: |
+          pip install -r tests/server/requirements.txt
+          pytest tests/server -m "not mock" -v
+
       - name: The CLI gate must actually fire
         # Same argument as the tokenizer harness: a gate whose failure modes
         # have never been exercised has an unknown sensitivity. This one runs

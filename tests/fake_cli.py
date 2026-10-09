@@ -24,7 +24,6 @@ is one of the failure modes no existing gate can see, because every other gate i
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import subprocess

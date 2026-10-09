@@ -196,7 +196,6 @@ def main() -> int:
     from transformers import NllbTokenizerFast
     tok = NllbTokenizerFast(tokenizer_file=str(tok_json), src_lang=args.src_lang)
 
-    cases = (["prompt"] * 0)
     texts = list(PROMPTS) + list(PINNED)
     texts += build_charsmap_probes(tok_json)
     texts += fuzz(random.Random(args.seed), args.fuzz)

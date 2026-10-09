@@ -91,7 +91,6 @@ import argparse
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 IDS_RE = re.compile(r"^(src|out) ids \((\d+)\):(.*)$", re.M)
