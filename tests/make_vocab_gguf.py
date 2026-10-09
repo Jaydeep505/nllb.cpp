@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "scripts"))   # gen_grapheme_tables, for the conve
 import numpy as np                                             # noqa: E402
 
 try:
-    import gguf
+    import gguf  # noqa: F401
     from gguf import GGUFWriter
 except ImportError:
     sys.exit("pip install gguf")

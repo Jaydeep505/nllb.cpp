@@ -14,9 +14,39 @@
 
 name: ci
 
+# Path filter: README/docs-only changes do not trigger this workflow. When it
+# DOES trigger, every job below runs in full - the filter decides whether the
+# suite runs, not which tests inside it run. `ggml` is the submodule pointer,
+# so a ggml bump triggers it too.
 on:
   push:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'ggml'
+      - 'patches/**'
+      - '**/CMakeLists.txt'
+      - 'cmake/**'
+      - 'examples/**'
+      - '!examples/nllb.swiftui/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'models/*.py'
+      - '.github/workflows/ci.yml'
   pull_request:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'ggml'
+      - 'patches/**'
+      - '**/CMakeLists.txt'
+      - 'cmake/**'
+      - 'examples/**'
+      - '!examples/nllb.swiftui/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'models/*.py'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 concurrency:

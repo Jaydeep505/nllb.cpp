@@ -1,0 +1,65 @@
+# nllb-server: HTTP API, validation, queueing and batching, tested with pytest
+# against nllb-server-mock (the same server.cpp built with NLLB_SERVER_MOCK:
+# the model is replaced by a stand-in, so no weights and no download).
+# Real-model server tests (output == nllb-cli) run in real-model.yml.
+#
+# Run the same thing locally:
+#   cmake -B build -DNLLB_BUILD_SERVER_MOCK=ON && cmake --build build -j --target nllb-server-mock
+#   pip install -r tests/server/requirements.txt && pytest tests/server
+
+name: server
+
+on:
+  push:
+    paths:
+      - 'examples/server/**'
+      - 'tests/server/**'
+      - '.github/workflows/server.yml'
+  pull_request:
+    paths:
+      - 'examples/server/**'
+      - 'tests/server/**'
+      - '.github/workflows/server.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mock:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: tests/server/requirements.txt
+
+      - name: Build nllb-server-mock
+        # Only the mock target: it does not link nllb or ggml, so this is one
+        # translation unit and takes well under a minute.
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DNLLB_BUILD_SERVER_MOCK=ON -DNLLB_BUILD_TESTS=OFF
+          cmake --build build -j 4 --target nllb-server-mock
+
+      - name: pytest
+        run: |
+          pip install -r tests/server/requirements.txt
+          pytest tests/server -v
+
+      - name: Build the real nllb-server too
+        # Not run (no model here) - this only guards that both builds compile.
+        run: cmake --build build -j 4 --target nllb-server

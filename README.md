@@ -50,7 +50,7 @@ Build the nllb-cli example:
 cmake -B build
 cmake --build build -j --config Release
 ```
-Start using cli for translation:(e.g. From [english to german](docs/languages.md))
+Start using cli for translation (e.g. from English [`eng_Latn`](docs/languages.md) to German [`deu_Latn`](docs/languages.md)):
 ```bash
 ./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
     --src eng_Latn --tgt deu_Latn 'Hello, world!'
@@ -68,6 +68,8 @@ Start using cli for translation:(e.g. From [english to german](docs/languages.md
 ./build/bin/nllb-cli -m models/nllb-600M-f16.gguf \
     --src deu_Latn --tgt eng_Latn --batch 8 < input.txt > output.txt
 ```
+`--src` and `--tgt` take FLORES-200 language codes. See the [full list of 202 supported languages](docs/languages.md).
+
 For detailed usage instructions:
 ```bash
 ./build/bin/nllb-cli -h
