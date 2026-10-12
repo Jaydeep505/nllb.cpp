@@ -13,7 +13,7 @@
   <a href="https://huggingface.co/JaydeepGupta/nllb-200-distilled-600M-GGUF"><img src="https://img.shields.io/badge/%F0%9F%A4%97-models-yellow" alt="models"></a>
 </p>
 
-`facebook/nllb-200-distilled-600M` in C++ on ggml: one GGUF, no Python at runtime, no dependency but vendored ggml.
+`facebook/nllb-200-distilled-600M` in C++ on ggml: one GGUF, no Python at runtime, no dependency.
 
 High-performance inference of Meta's [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M)
 machine translation model (600M distilled):
@@ -32,6 +32,7 @@ machine translation model (600M distilled):
 Supported platforms:
 
 - [x] macOS (Apple Silicon: CPU + Metal)
+- [x] Linux
 - [x] [iOS](examples/nllb.swiftui) (xcframework + SwiftUI example)
 - [x] Windows (CPU, CUDA)
 
