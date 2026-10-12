@@ -61,8 +61,8 @@ MUTATIONS = [
      "the graph order changed - and every output that is only safe by position "
      "should be re-checked.",
      "inert",
-     [("    ggml_set_name(cur, \"dec_out\");\n    ggml_set_output(cur);\n    hs.push_back(cur);\n\n    ggml_tensor * logits",
-       "    ggml_set_name(cur, \"dec_out\");\n    hs.push_back(cur);\n\n    ggml_tensor * logits", None)]),
+     [("    ggml_set_name(cur, \"dec_out\");\n    ggml_set_output(cur);\n    hs.push_back(cur);\n\n    ggml_tensor * logits = nullptr;",
+       "    ggml_set_name(cur, \"dec_out\");\n    hs.push_back(cur);\n\n    ggml_tensor * logits = nullptr;", None)]),
 
     ("mask-too-large",
      "causal mask offset one too LARGE: invisible at one token per step",
@@ -80,7 +80,7 @@ MUTATIONS = [
      "expand the real kq node before the cache write",
      "fire",
      [("        ggml_build_forward_expand(gf, ggml_cpy(ctx, Kp, k_dst));\n"
-       "        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));\n", "", None),
+       "        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vp, v_dst));\n", "", 0),   # 0: the cached step, not the batched copy
       ("        kq = ggml_soft_max_ext(ctx, kq, kq_mask, 1.0f, 0.0f);\n"
        "        ggml_tensor * kqv = ggml_mul_mat(ctx, Vv, kq);              // (HD, Tn, H)\n",
        "        kq = ggml_soft_max_ext(ctx, kq, kq_mask, 1.0f, 0.0f);\n"
