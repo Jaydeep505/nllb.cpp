@@ -93,6 +93,7 @@ void usage(const char * argv0) {
         "                          auto   the GPU if this build has one, else CPU\n"
         "                          metal  Metal; FAILS rather than fall back\n"
         "                          cuda   CUDA; FAILS rather than fall back\n"
+        "                          vulkan Vulkan (or vk); FAILS rather than fall back\n"
         "                          cpu    ggml's CPU backend - the reference\n"
         "                          or a device name from --list-backends\n"
         "                        On a GPU backend, ops it does not implement run\n"

@@ -107,6 +107,11 @@ struct nllb_model {
     ggml_backend * backend_cpu = nullptr;   // fallback, and where n_threads applies
     std::string    backend_name;            // ggml's name for the primary, e.g. "CPU", "MTL0"
     bool           on_cpu      = true;      // backend == backend_cpu
+    // Copy the self-attention K view to a contiguous tensor before the kq
+    // matmul. OFF by default; NLLB_KV_CONT=1 turns it on. It was the Vulkan
+    // workaround for trap 55, which the current ggml pin fixes. The copy is
+    // exact, so it moves no float on any backend.
+    bool           kv_k_cont   = false;
     ggml_backend_buffer * weights_buf = nullptr;
     bool           weights_host_ptr   = false;   // the buffer wraps the mapping, zero-copy
 
@@ -162,7 +167,7 @@ struct nllb_encode_result {
 //   "cpu"          ggml's CPU backend. The reference configuration.
 //   "metal", "gpu" the first GPU device in this build; FAILS if there is none.
 //   "auto"         the first GPU device if there is one, else the CPU.
-//   a device name  as ggml names it, e.g. "MTL0", "CUDA0", "CPU".
+//   a device name  as ggml names it, e.g. "MTL0", "CUDA0", "Vulkan0", "CPU".
 //   ""             $NLLB_BACKEND if set, else "cpu".
 // The library default is the CPU for the same reason use_cache defaults to
 // false: a default that silently moved every gate onto different kernels
