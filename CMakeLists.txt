@@ -23,6 +23,21 @@ if(NLLB_CUDA)
     endif()
 endif()
 
+# Vulkan: -DNLLB_VULKAN=ON. BUILD needs the Vulkan headers + loader, glslc and
+# SPIRV-Headers (LunarG SDK with VULKAN_SDK set, or on Ubuntu
+# `apt install libvulkan-dev glslc spirv-headers`); RUN needs only the driver's
+# vulkan-1.dll / libvulkan.so.1. ggml-vulkan builds and RUNS a host tool
+# (vulkan-shaders-gen), and ggml refuses MSVC on Arm, so Windows on Arm (the
+# Snapdragon X Elite) is built NATIVELY with clang - see docs/qdc-xelite.md.
+# ggml-vulkan hides CPU-type devices (Mesa lavapipe) unless
+# GGML_VK_VISIBLE_DEVICES names them; that is how CI runs graphs without a GPU.
+option(NLLB_VULKAN "nllb: build the ggml Vulkan backend" OFF)
+
+if(NLLB_VULKAN)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    message(STATUS "nllb: Vulkan backend ON")
+endif()
+
 option(NLLB_GGML_PATCHES "nllb: apply patches/ggml-*.patch to ggml" ON)
 if(NLLB_GGML_PATCHES)
     find_package(Git REQUIRED)
@@ -51,6 +66,14 @@ if(NLLB_CUDA AND NOT TARGET ggml-cuda)
         "find_package(CUDAToolkit) found no toolkit: install one and put nvcc "
         "on PATH, or point -DCUDAToolkit_ROOT at it. `nvcc --version` is the "
         "check.")
+endif()
+
+if(NLLB_VULKAN AND NOT TARGET ggml-vulkan)
+    message(FATAL_ERROR
+        "NLLB_VULKAN=ON but ggml did not build its Vulkan backend. Its "
+        "find_package(Vulkan COMPONENTS glslc) needs the headers, the loader "
+        "library and glslc: install the LunarG SDK and set VULKAN_SDK, or on "
+        "Ubuntu `apt install libvulkan-dev glslc spirv-headers`.")
 endif()
 
 if(MSVC)

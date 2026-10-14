@@ -299,10 +299,11 @@ bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
     // A family is a SET OF SPELLINGS THAT MEAN EACH OTHER, not a canonical name
     // with aliases hanging off it: every row is entered from any member, so
     // naming a family by any of its spellings finds a device named by any
-    // other. The supported device backends are Metal and CUDA.
+    // other. The supported device backends are Metal, CUDA and Vulkan.
     static const char * const families[][3] = {
         { "metal",  "mtl",    nullptr },
         { "cuda",   nullptr,  nullptr },
+        { "vulkan", "vk",     nullptr },
     };
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -457,6 +458,16 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         }
         model.on_cpu       = model.backend == model.backend_cpu;
         model.backend_name = ggml_backend_name(model.backend);
+
+        // Trap 55: ggml-vulkan at the old 7840aab pin stepped between the
+        // matrices of a batch by ne00*ne01 and ignored nb[2], so the gapped
+        // self-attention K view ([HD, n_kv, H] over [HD, n_ctx, H]) read the
+        // wrong rows for every head after the first whenever n_kv < n_ctx.
+        // FIXED upstream by the current pin (nllb-probe-kv-ops vulkan: raw
+        // K view rel 9.4e-08 on lavapipe; the cache gate is identical with and
+        // without the copy). Kept as an opt-in diagnostic: NLLB_KV_CONT=1
+        // inserts an exact ggml_cont before the matmul on any backend.
+        if (const char * e = ::getenv("NLLB_KV_CONT")) model.kv_k_cont = *e == '1';
     }
 
     // Try the mapping FIRST. gguf is ALWAYS parsed with no_alloc = true now:
@@ -1427,7 +1438,9 @@ bool nllb_decode_cached(const nllb_model & model,
         ggml_tensor * Kv = ggml_view_3d(ctx, kc, HD, n_kv, H,
                 kc->nb[1], kc->nb[2], 0);                           // (HD, n_kv, H)
         // Heads sit n_ctx rows apart, so this view has a GAPPED batch stride;
-        // the matmul must read nb[2]. nllb-probe-kv-ops checks a new backend.
+        // the matmul must read nb[2]. Every backend at this ggml pin does
+        // (ggml-vulkan did not before - trap 55, see kv_k_cont). nllb-probe-kv-ops checks a new backend.
+        if (model.kv_k_cont) Kv = ggml_cont(ctx, Kv);
         ggml_tensor * Vv = ggml_view_3d(ctx, vc, n_kv, HD, H,
                 vc->nb[1], vc->nb[2], 0);                           // (n_kv, HD, H)
 
@@ -2151,6 +2164,7 @@ bool nllb_decode_cached_batch(const nllb_model & model,
 
         ggml_tensor * Kv = ggml_view_4d(ctx, kc, HD, n_kv, H, B,
                 kc->nb[1], kc->nb[2], kc->nb[3], 0);                    // (HD, n_kv, H, B)
+        if (model.kv_k_cont) Kv = ggml_cont(ctx, Kv);                   // trap 55
         ggml_tensor * Vv = ggml_view_4d(ctx, vc, n_kv, HD, H, B,
                 vc->nb[1], vc->nb[2], vc->nb[3], 0);                    // (n_kv, HD, H, B)
 

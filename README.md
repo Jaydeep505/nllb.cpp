@@ -22,7 +22,7 @@ machine translation model (600M distilled):
 - Built-in tokenizer, so no Python or sentencepiece at runtime: one GGUF file is the whole model
 - Batched decoding: translate several sentences in one pass
 - Support for CPU-only inference
-- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon and [CUDA](#nvidia-gpu-support) on NVIDIA
+- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon, [CUDA](#nvidia-gpu-support) on NVIDIA, and [Vulkan](#vulkan-gpu-support) (experimental) on everything else
 - Zero memory allocations per token: the compute graph's memory is reused across decode steps
 - [1.4–1.8x faster than HF transformers, 3x less peak memory on Apple Silicon and 13x less host RAM on CUDA](docs/benchmarks.md).
 - F16 / F32 weights and [integer quantization](examples/quantize) via `nllb-quantize`
@@ -34,7 +34,7 @@ Supported platforms:
 - [x] macOS (Apple Silicon: CPU + Metal)
 - [x] Linux
 - [x] [iOS](examples/nllb.swiftui) (xcframework + SwiftUI example)
-- [x] Windows (CPU, CUDA)
+- [x] Windows (CPU, CUDA, Vulkan); Windows on Arm (CPU, Vulkan - hardware run pending)
 
 ## Quick start
  Clone the repository with recursive method and navigate to directory:
@@ -111,6 +111,27 @@ cmake --build build -j --config Release
 | RTX 40xx / L4 | `89` |
 | H100 | `90` |
 | RTX 50xx | `120` (CUDA 12.8+) |
+
+## Vulkan GPU support
+
+**Experimental.** Cross-vendor GPU support through ggml's Vulkan backend
+(Adreno, Intel, AMD, NVIDIA, Mali). Every backend gate passes on Mesa lavapipe
+(a conformant Vulkan implementation on the CPU) and runs in CI; the first run on
+real GPU hardware (Snapdragon X Elite / Adreno X1-85) is pending - see
+[docs/qdc-xelite.md](docs/qdc-xelite.md).
+
+Build needs the Vulkan headers, loader and `glslc`: the [LunarG SDK](https://vulkan.lunarg.com/sdk/home)
+(set `VULKAN_SDK`), or on Ubuntu `sudo apt install libvulkan-dev glslc spirv-headers`.
+
+```bash
+cmake -B build -DNLLB_VULKAN=ON
+cmake --build build -j --config Release
+./build/bin/nllb-cli --list-backends             # expect Vulkan0 - <your GPU>
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf --backend vulkan --tgt deu_Latn "Hello, world!"
+```
+
+On Windows on Arm (Snapdragon X), build natively with clang - ggml refuses
+MSVC on Arm. `scripts/qdc/build-arm64.cmd` has the recipe.
 
 ## Use cases
 
