@@ -109,13 +109,17 @@ jobs:
       # if vulkan-1.dll is missing) and vulkan. Same flags apart from the one
       # backend switch. Static CRT so nothing needs the VC++ redistributable on
       # a freshly wiped QDC image. The server is skipped: not needed on the device.
+      # BUILD_SHARED_LIBS=OFF: on Windows ggml defaults to DLLs (ggml.dll,
+      # ggml-base.dll, ggml-cpu.dll, ggml-vulkan.dll). The first QDC run died with
+      # 0xC0000135 because the zip shipped the .exes without them. Static linking
+      # makes every .exe self-contained; only the driver's vulkan-1.dll is external.
       - name: Build cpu / vulkan (clang, Ninja, native Arm64)
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" arm64
           where clang
           clang --version
-          set COMMON=-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=%ARM_ARCH% -DGGML_OPENMP=OFF -DNLLB_BUILD_SERVER=OFF
+          set COMMON=-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=%ARM_ARCH% -DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF -DNLLB_BUILD_SERVER=OFF
           cmake -B build-cpu %COMMON% || exit /b 1
           cmake --build build-cpu -j || exit /b 1
           cmake -B build-vulkan %COMMON% -DNLLB_VULKAN=ON || exit /b 1
@@ -148,6 +152,19 @@ jobs:
           foreach ($b in "cpu","vulkan") {
             New-Item -ItemType Directory -Force "$pkg\$b" | Out-Null
             foreach ($e in $exes) { Copy-Item "build-$b\bin\$e.exe" "$pkg\$b\" }
+            # belt and braces: ship any DLL the build produced (none expected when static)
+            Get-ChildItem "build-$b\bin\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$pkg\$b\"
+          }
+          # Run every packaged .exe FROM THE PACKAGE, not from the build dir, so a
+          # missing DLL fails here instead of on the device. 0xC0000135 = -1073741515.
+          foreach ($b in "cpu","vulkan") {
+            foreach ($e in $exes) {
+              $p = Start-Process -FilePath "$pkg\$b\$e.exe" -ArgumentList "--help" -NoNewWindow -Wait -PassThru `
+                     -RedirectStandardOutput "$env:RUNNER_TEMP\o.txt" -RedirectStandardError "$env:RUNNER_TEMP\e.txt"
+              if ($p.ExitCode -eq -1073741515) { throw "$b\$e.exe does not start from the package: a DLL is missing" }
+            }
+            & "$pkg\$b\nllb-cli.exe" --list-backends
+            if ($LASTEXITCODE) { throw "$b\nllb-cli.exe --list-backends failed from the package" }
           }
           Copy-Item -Recurse models, ref-shape, baseline "$pkg\"
           Copy-Item scripts\qdc\run.ps1, scripts\qdc\sentences.txt, docs\qdc-xelite.md "$pkg\"
