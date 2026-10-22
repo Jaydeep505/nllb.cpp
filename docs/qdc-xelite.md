@@ -111,6 +111,24 @@ is identical with and without the copy, so the workaround is now **off by
 default** and kept as an opt-in diagnostic: `NLLB_KV_CONT=1`. The CI probe is
 the canary: if a ggml bump brings the bug back, the `vulkan` job goes red.
 
+## Trap 61: the embedding table is too large for the Adreno's buffer limit
+
+First real-model run on the X1-85 aborted in `ggml_backend_sched`:
+`pre-allocated tensor (token_embd.weight) in a buffer (Vulkan0) that cannot run
+the operation (NONE)`. `token_embd.weight` is 256206 x 1024 f16 = **525 MB in one
+tensor**, over the Adreno's `maxStorageBufferRange`. ggml-vulkan refuses every op
+on a tensor over that limit, and a weight already in device memory cannot be moved,
+so the scheduler aborts. The small test model (2 MB table) and lavapipe (huge limits)
+could not show it.
+
+Fix: at load time each weight is checked with `ggml_backend_dev_supports_op`, the
+same question the scheduler asks, and any the device refuses is kept in CPU memory.
+The embedding lookup and the tied lm_head then run on the CPU (`splits 3` on the
+cached step) and every other op stays on the GPU. `nllb-cli -v` prints
+`weights kept in CPU memory (too large for Vulkan0): token_embd.weight (500.3 MiB)`.
+CI forces small limits on lavapipe (`GGML_VK_FORCE_MAX_BUFFER_SIZE`) to keep this
+path tested. Follow-up for speed: split the lm_head into row chunks the GPU accepts.
+
 ## Things that go red and are not bugs
 
 * `--backend metal` / `cuda` on this machine - correct: a named backend never

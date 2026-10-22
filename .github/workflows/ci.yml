@@ -562,6 +562,21 @@ jobs:
             if grep "cached step" /tmp/cache.txt | grep -vqE "splits +1 +compute"; then echo "a cached step split"; exit 1; fi
           done
 
+      # Trap 61: a weight bigger than the device's buffer limits (token_embd on the
+      # Adreno X1-85, 525 MB) must be kept in CPU memory, not abort the scheduler.
+      # Lavapipe's limits are huge, so force small ones: token_embd (2 MiB here)
+      # becomes too large and every gate must still pass with it on the CPU.
+      - name: Oversized weight stays on the CPU (forced small Vulkan limits)
+        env:
+          GGML_VK_FORCE_MAX_BUFFER_SIZE: "1500000"
+          GGML_VK_SUBALLOCATION_BLOCK_SIZE: "1400000"
+        run: |
+          NLLB_LOAD_TRACE=1 NLLB_BACKEND=vulkan ./build-vk/bin/nllb-test-cache models/small-f16.gguf ref-small/ -t 2 2>&1 | tee /tmp/forced.txt
+          grep -q "too large for Vulkan0: kept in CPU memory" /tmp/forced.txt
+          grep -q "^PASS" /tmp/forced.txt
+          ./build-vk/bin/nllb-test-precision models/small-f16.gguf models/small-f16.gguf ref-small/ -t 2 --backend cpu:vulkan
+          ./build-vk/bin/nllb-test-batch models/small-f16.gguf -t 2 --backend vulkan
+
       - name: CPU vs Vulkan - exact ids and the margin audit
         run: |
           for t in f32 f16; do

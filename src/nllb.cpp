@@ -363,6 +363,7 @@ nllb_model::~nllb_model() {
     // mapping last. Freeing the map first leaves dangling ->data behind.
     if (sched)       { ggml_backend_sched_free(sched);        sched = nullptr; }
     if (weights_buf) { ggml_backend_buffer_free(weights_buf); weights_buf = nullptr; }
+    if (weights_buf_host) { ggml_backend_buffer_free(weights_buf_host); weights_buf_host = nullptr; }
     if (gguf)        { gguf_free(gguf);  gguf  = nullptr; }
     if (ctx_w)       { ggml_free(ctx_w); ctx_w = nullptr; }
     if (backend && backend != backend_cpu) ggml_backend_free(backend);
@@ -502,6 +503,39 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
     ggml_backend_dev_props props;
     ggml_backend_dev_get_props(pdev, &props);
 
+    // Weights the device cannot run any op on (trap 61). The scheduler asks the
+    // backend exactly this - supports_op on the weight itself, a GGML_OP_NONE
+    // leaf - and ABORTS when a weight sits in a buffer whose backend says no,
+    // because a pre-allocated tensor cannot be moved. ggml-vulkan says no for
+    // any tensor over the device's maxStorageBufferRange / maxBufferSize. Asking
+    // the same question here, before allocating, lets those tensors live in CPU
+    // memory instead; their ops then run on the CPU (the scheduler places an op
+    // with the backend that holds its weights) and the device runs the rest.
+    std::vector<ggml_tensor *> host_only;
+    if (!model.on_cpu) {
+        size_t host_bytes = 0;
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx_data); t; t = ggml_get_next_tensor(ctx_data, t)) {
+            if (!ggml_backend_dev_supports_op(pdev, t)) {
+                host_only.push_back(t);
+                host_bytes += ggml_nbytes(t);
+                if (!model.weights_host_note.empty()) model.weights_host_note += ", ";
+                char sz[48];
+                std::snprintf(sz, sizeof sz, " (%.1f MiB)", ggml_nbytes(t) / 1048576.0);
+                model.weights_host_note += std::string(ggml_get_name(t)) + sz;
+            }
+        }
+        if (trace && !host_only.empty()) {
+            std::fprintf(stderr, "[load-trace] %zu tensor(s), %.1f MiB, too large for %s: kept in CPU memory\n",
+                         host_only.size(), host_bytes / 1048576.0, model.backend_name.c_str());
+        }
+    }
+    if (map_addr && !host_only.empty()) {
+        // The mapping is wrapped as ONE device buffer; a split placement cannot
+        // use it. Read instead.
+        nllb_munmap_file(map_addr, map_size);
+        map_addr = nullptr;
+    }
+
     if (map_addr && !props.caps.buffer_from_host_ptr) {
         // The device cannot wrap host memory, so mapping buys nothing: the
         // bytes have to be copied into device memory either way.
@@ -573,6 +607,18 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         }
     } else {
         const double t_read0 = nllb_now_ms();
+        if (!host_only.empty()) {
+            model.weights_buf_host = ggml_backend_buft_alloc_buffer_n(
+                    ggml_backend_get_default_buffer_type(model.backend_cpu),
+                    host_only.data(), (int) host_only.size());
+            if (!model.weights_buf_host) {
+                err = "could not allocate CPU memory for the weights " + model.backend_name +
+                      " cannot use: " + model.weights_host_note;
+                return false;
+            }
+            ggml_backend_buffer_set_usage(model.weights_buf_host, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        }
+        // Skips every tensor that already has memory, i.e. the host_only ones.
         model.weights_buf = ggml_backend_alloc_ctx_tensors_from_buft(
                 ctx_data, ggml_backend_get_default_buffer_type(model.backend));
         if (!model.weights_buf) {

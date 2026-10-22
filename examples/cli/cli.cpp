@@ -480,6 +480,10 @@ int main(int argc, char ** argv) {
             model.weights_host_ptr ? "zero-copy in the backend buffer" : "copied to the backend",
             model.backend_name.c_str(),
             model.on_cpu ? "" : " (CPU fallback for unsupported ops)");
+        if (!model.weights_host_note.empty()) {
+            std::fprintf(stderr, "weights kept in CPU memory (too large for %s): %s\n",
+                         model.backend_name.c_str(), model.weights_host_note.c_str());
+        }
     }
 
     nllb_generate_params base;

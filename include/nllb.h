@@ -113,6 +113,14 @@ struct nllb_model {
     // exact, so it moves no float on any backend.
     bool           kv_k_cont   = false;
     ggml_backend_buffer * weights_buf = nullptr;
+    // Weights the primary device cannot run ANY op on, kept in CPU memory instead
+    // (trap 61). On the Adreno X1-85 that is token_embd.weight: 256206 x 1024 f16
+    // = 525 MB, over the device's maxStorageBufferRange, so ggml-vulkan refuses
+    // every op that touches it and the scheduler aborted on a weight it could not
+    // move. With it here, get_rows and the tied lm_head run on the CPU and every
+    // other op stays on the device. Empty (null) on the CPU, Metal and CUDA.
+    ggml_backend_buffer * weights_buf_host = nullptr;
+    std::string           weights_host_note;   // e.g. "token_embd.weight (500.3 MiB)"
     bool           weights_host_ptr   = false;   // the buffer wraps the mapping, zero-copy
 
     // The compute allocator for the one-shot graphs (encoder, un-cached
