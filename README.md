@@ -22,7 +22,7 @@ machine translation model (600M distilled):
 - Built-in tokenizer, so no Python or sentencepiece at runtime: one GGUF file is the whole model
 - Batched decoding: translate several sentences in one pass
 - Support for CPU-only inference
-- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon, [CUDA](#nvidia-gpu-support) on NVIDIA, and [Vulkan](#vulkan-gpu-support) (experimental) on everything else
+- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon, [CUDA](#nvidia-gpu-support) on NVIDIA, and [Vulkan](#vulkan-gpu-support) on everything else
 - Zero memory allocations per token: the compute graph's memory is reused across decode steps
 - [1.4–1.8x faster than HF transformers, 3x less peak memory on Apple Silicon and 13x less host RAM on CUDA](docs/benchmarks.md).
 - F16 / F32 weights and [integer quantization](examples/quantize) via `nllb-quantize`
@@ -34,7 +34,7 @@ Supported platforms:
 - [x] macOS (Apple Silicon: CPU + Metal)
 - [x] Linux
 - [x] [iOS](examples/nllb.swiftui) (xcframework + SwiftUI example)
-- [x] Windows (CPU, CUDA, Vulkan); Windows on Arm (CPU, Vulkan - hardware run pending)
+- [x] Windows (CPU, CUDA, Vulkan); Windows on Arm (CPU, Vulkan - verified on Snapdragon X Elite)
 
 ## Quick start
  Clone the repository with recursive method and navigate to directory:
@@ -114,11 +114,13 @@ cmake --build build -j --config Release
 
 ## Vulkan GPU support
 
-**Experimental.** Cross-vendor GPU support through ggml's Vulkan backend
-(Adreno, Intel, AMD, NVIDIA, Mali). Every backend gate passes on Mesa lavapipe
-(a conformant Vulkan implementation on the CPU) and runs in CI; the first run on
-real GPU hardware (Snapdragon X Elite / Adreno X1-85) is pending - see
-[docs/qdc-xelite.md](docs/qdc-xelite.md).
+Cross-vendor GPU support through ggml's Vulkan backend. **Verified on a Snapdragon
+X Elite (Adreno X1-85)**: translations byte-identical to the CPU, every backend gate
+passing; the same gates run in CI on Mesa lavapipe. On that laptop the CPU is
+faster for single sentences (10.5 vs 15.4 ms per decoder step), so Vulkan is
+there for portability rather than speed. Other Vulkan GPUs (Intel, AMD, NVIDIA,
+Mali) should work but have not been tested. Results and how to reproduce them:
+[docs/vulkan.md](docs/vulkan.md).
 
 Build needs the Vulkan headers, loader and `glslc`: the [LunarG SDK](https://vulkan.lunarg.com/sdk/home)
 (set `VULKAN_SDK`), or on Ubuntu `sudo apt install libvulkan-dev glslc spirv-headers`.

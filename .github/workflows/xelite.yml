@@ -1,6 +1,6 @@
 # The Snapdragon X Elite package: CPU + Vulkan, built NATIVELY on Windows on
 # Arm, tested on the CI runner's CPU, shipped as one zip for a Qualcomm Device
-# Cloud (QDC) session. Full walkthrough: docs/qdc-xelite.md.
+# Cloud (QDC) session. Full walkthrough: docs/vulkan.md.
 #
 #   Actions tab -> "xelite" -> Run workflow        (or push a tag xelite-*)
 #   download the artifact nllb-xelite.zip, copy it to the QDC device,
@@ -28,7 +28,7 @@ on:
 
 env:
   # The ggml commit this package is built and verified on (lavapipe gates,
-  # docs/qdc-xelite.md). A zip built on a different pin would make the QDC
+  # docs/vulkan.md). A zip built on a different pin would make the QDC
   # session measure the bump. Both jobs refuse to build anything else.
   GGML_PIN: ffa4e8b
   # llama.cpp's choice for the X Elite; the runner supports it too, so the SAME
@@ -167,7 +167,7 @@ jobs:
             if ($LASTEXITCODE) { throw "$b\nllb-cli.exe --list-backends failed from the package" }
           }
           Copy-Item -Recurse models, ref-shape, baseline "$pkg\"
-          Copy-Item scripts\qdc\run.ps1, scripts\qdc\sentences.txt, docs\qdc-xelite.md "$pkg\"
+          Copy-Item scripts\qdc\run.ps1, scripts\qdc\sentences.txt, docs\vulkan.md "$pkg\"
           $info = @(
             "commit=$env:GITHUB_SHA",
             "ggml=$(git -C ggml describe --tags --always)",

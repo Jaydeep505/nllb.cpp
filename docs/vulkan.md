@@ -1,10 +1,56 @@
-# nllb.cpp on a Snapdragon X Elite (Adreno X1-85) via Qualcomm Device Cloud
+# Vulkan backend: results on the Snapdragon X Elite (Adreno X1-85)
 
-Target: the **Snapdragon X Elite Compute Reference Design, Windows 11 on Arm**,
-Adreno X1-85 GPU, through the **Vulkan** backend. The CPU path is tested in the
-same session as the reference every GPU number is compared against.
+nllb.cpp's Vulkan backend (`-DNLLB_VULKAN=ON`) tested on real GPU hardware: the
+**Snapdragon X Elite Compute Reference Design (X1E80100), Windows 11 on Arm,
+Adreno X1-85**, through Qualcomm Device Cloud (QDC). The CPU path is tested in the
+same session as the reference every GPU number is compared against. CI runs the
+same gates on Mesa lavapipe on every pull request.
 
-## The short version
+## Results
+
+Device: Adreno X1-85, driver 31.0.160.0, `vulkan-1.dll` 1.3.300.0; ggml reports
+`uma: 1 | fp16: 1 | int dot: 1 | warp size: 64 | matrix cores: none`.
+Build: ggml `ffa4e8b`, clang (MSVC ABI), `armv8.7-a`, static, Vulkan SDK 1.4.363.0.
+
+### Correctness: everything matches the CPU
+
+| Check | Model | Result |
+|---|---|---|
+| KV-cache ops, device vs CPU (`nllb-probe-kv-ops`) | - | PASS, 0 of 36 disagree |
+| Device CPU vs CI-runner CPU, same binary | test fixture | IDENTICAL (f16 and f32) |
+| Cache gate (`nllb-test-cache`) | test fixture | PASS, `full = exact`, `[arena]` exact (f32, f16) |
+| CPU vs Vulkan ids + margin audit (`nllb-test-precision`) | test fixture | PASS, 96/96 exact; headroom 37.7x (f32), 5.2x (f16) |
+| Batching (`nllb-test-batch`) | test fixture | PASS, `[equal]` `[perm]` `[mask]` bit-identical |
+| **Translation text, CPU vs Vulkan** | **real 600M f16** | **9/9 sentences byte-identical** |
+
+```
+Hallo, Welt!
+Der schnelle braune Fuchs springt über den faulen Hund.
+Der Ausschuß wird seinen Bericht am Dienstag nach der Abstimmung veröffentlichen.
+```
+
+### Speed: the CPU is faster on this machine at batch 1
+
+Real 600M f16, 8 threads, `nllb-bench --src 24 --steps 64`, medians:
+
+| | CPU (Oryon, 12 cores) | Vulkan (Adreno X1-85) |
+|---|---|---|
+| Decoder step (one token) | **10.5 ms** | 15.4 ms (0.68x) |
+| Decoder step without the lm_head | **5.4 ms** | 8.9 ms |
+| Encoder, 24 source tokens | **72 ms** | 476 ms (single run, includes shader compilation on first use) |
+
+At batch 1 each decoder step is a memory-bound matrix-vector product. The Oryon
+CPU reads the same unified memory as the GPU and ggml's CPU kernels are well
+tuned for it, while the Adreno through ggml-vulkan has no matrix cores and pays a
+per-dispatch cost on ~700 graph nodes per step. Use `--backend cpu` for the fastest
+single-sentence translation on this laptop; Vulkan is there for GPUs and machines
+where the CPU is the weaker side, and gives the same text. Not yet measured: batched
+decoding (`--batch N`), where the GPU has matrix-matrix work to do.
+
+On this device the 525 MB embedding table / lm_head is kept in CPU memory (trap 61
+below), so that matmul runs on the CPU and the cached step has 3 splits.
+
+## How to reproduce
 
 1. Push the branch to GitHub (ggml submodule at the pin in `xelite.yml`,
    currently `ffa4e8b`).
@@ -19,6 +65,19 @@ same session as the reference every GPU number is compared against.
    ```
 
 4. Copy **`results.zip`** off the device before the session ends. QDC wipes it.
+
+Practical notes from the real sessions:
+
+* QDC's "Package Upload" puts the zip at `C:\Temp\file` **without** extracting it
+  or keeping the extension. On the device:
+  `Copy-Item C:\Temp\file C:\nllb-xelite.zip; Expand-Archive C:\nllb-xelite.zip -DestinationPath C:\nllb`.
+* The browser view is slow; use SSH from your machine instead. QDC's Connect dialog
+  gives two commands: a tunnel (`ssh -i key -L 2222:<host>:22 -N sshtunnel@ssh.qdc.qualcomm.com`,
+  add `-o ServerAliveInterval=30` so it does not drop) and the login
+  (`ssh -i key -p 2222 hcktest@localhost`). Copy files with
+  `scp -i key -P 2222 hcktest@localhost:C:/nllb/results.zip .`, run on YOUR machine.
+* The SSH login starts in `cmd`; type `powershell` first.
+* `run.ps1` logs are UTF-16 (Windows PowerShell 5.1); read them with `iconv -f UTF-16`.
 
 The first session needs **no model**: every gate in it compares two C++ paths on
 a small random fixture, so the weights cancel. Once it is green, bring the real
@@ -58,7 +117,7 @@ vulkan\    the same, built -DNLLB_VULKAN=ON
 models\    shape-small-f16.gguf, shape-small-f32.gguf   (random weights, NLLB shape)
 ref-shape\ structural manifest for them (no goldens)
 baseline\  runner-cpu-f16.bin, runner-cpu-f32.bin       (the CI runner's CPU dump)
-run.ps1  sentences.txt  BUILD-INFO.txt  qdc-xelite.md
+run.ps1  sentences.txt  BUILD-INFO.txt  vulkan.md
 ```
 
 Two builds, one backend each: `cpu\` always starts, even if the driver's

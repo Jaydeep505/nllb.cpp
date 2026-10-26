@@ -488,7 +488,7 @@ jobs:
   # shaders, ggml-vulkan's own scheduling - so every backend gate is asserted.
   # ggml-vulkan hides CPU-type devices unless GGML_VK_VISIBLE_DEVICES names them.
   # What it cannot tell you: anything about a real GPU's speed or driver bugs.
-  # That is the QDC X Elite run (.github/workflows/xelite.yml, docs/qdc-xelite.md).
+  # That is the QDC X Elite run (.github/workflows/xelite.yml, docs/vulkan.md).
   # ---------------------------------------------------------------------------
   vulkan:
     runs-on: ubuntu-latest

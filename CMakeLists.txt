@@ -28,7 +28,7 @@ endif()
 # `apt install libvulkan-dev glslc spirv-headers`); RUN needs only the driver's
 # vulkan-1.dll / libvulkan.so.1. ggml-vulkan builds and RUNS a host tool
 # (vulkan-shaders-gen), and ggml refuses MSVC on Arm, so Windows on Arm (the
-# Snapdragon X Elite) is built NATIVELY with clang - see docs/qdc-xelite.md.
+# Snapdragon X Elite) is built NATIVELY with clang - see docs/vulkan.md.
 # ggml-vulkan hides CPU-type devices (Mesa lavapipe) unless
 # GGML_VK_VISIBLE_DEVICES names them; that is how CI runs graphs without a GPU.
 option(NLLB_VULKAN "nllb: build the ggml Vulkan backend" OFF)
