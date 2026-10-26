@@ -114,12 +114,7 @@ cmake --build build -j --config Release
 
 ## Vulkan GPU support
 
-Cross-vendor GPU support through ggml's Vulkan backend. **Verified on a Snapdragon
-X Elite (Adreno X1-85)**: translations byte-identical to the CPU, every backend gate
-passing; the same gates run in CI on Mesa lavapipe. On that laptop the CPU is
-faster for single sentences (10.5 vs 15.4 ms per decoder step), so Vulkan is
-there for portability rather than speed. Other Vulkan GPUs (Intel, AMD, NVIDIA,
-Mali) should work but have not been tested. Results and how to reproduce them:
+Cross-vendor GPU support through ggml's Vulkan backend. Results:
 [docs/vulkan.md](docs/vulkan.md).
 
 Build needs the Vulkan headers, loader and `glslc`: the [LunarG SDK](https://vulkan.lunarg.com/sdk/home)
