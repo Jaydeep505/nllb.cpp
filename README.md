@@ -34,7 +34,7 @@ Supported platforms:
 - [x] macOS (Apple Silicon: CPU + Metal)
 - [x] Linux
 - [x] [iOS](examples/nllb.swiftui) (xcframework + SwiftUI example)
-- [x] Windows (CPU, CUDA, Vulkan); Windows on Arm (CPU, Vulkan - verified on Snapdragon X Elite)
+- [x] Windows (CPU, CUDA, Vulkan)
 
 ## Quick start
  Clone the repository with recursive method and navigate to directory:
@@ -123,8 +123,6 @@ Build needs the Vulkan headers, loader and `glslc`: the [LunarG SDK](https://vul
 ```bash
 cmake -B build -DNLLB_VULKAN=ON
 cmake --build build -j --config Release
-./build/bin/nllb-cli --list-backends             # expect Vulkan0 - <your GPU>
-./build/bin/nllb-cli -m models/nllb-600M-f16.gguf --backend vulkan --tgt deu_Latn "Hello, world!"
 ```
 
 On Windows on Arm (Snapdragon X), build natively with clang - ggml refuses
