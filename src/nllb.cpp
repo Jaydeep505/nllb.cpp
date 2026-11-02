@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -299,11 +300,14 @@ bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
     // A family is a SET OF SPELLINGS THAT MEAN EACH OTHER, not a canonical name
     // with aliases hanging off it: every row is entered from any member, so
     // naming a family by any of its spellings finds a device named by any
-    // other. The supported device backends are Metal, CUDA and Vulkan.
+    // other. The supported device backends are Metal, CUDA, Vulkan and
+    // OpenCL. ggml names the OpenCL device "GPUOpenCL" and its registry
+    // "OpenCL": "opencl" finds it by substring, "ocl" only through this table.
     static const char * const families[][3] = {
         { "metal",  "mtl",    nullptr },
         { "cuda",   nullptr,  nullptr },
         { "vulkan", "vk",     nullptr },
+        { "opencl", "ocl",    nullptr },
     };
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -511,11 +515,21 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
     // the same question here, before allocating, lets those tensors live in CPU
     // memory instead; their ops then run on the CPU (the scheduler places an op
     // with the backend that holds its weights) and the device runs the rest.
+    // ggml-opencl answers supports_op(NONE) with an unconditional yes; its
+    // limit is the buffer type's max size, CL_DEVICE_MAX_MEM_ALLOC_SIZE, and a
+    // tensor over it cannot be allocated at all (ggml gives an oversized tensor
+    // a buffer of its own, and clCreateBuffer refuses it). Same remedy. OpenCL
+    // only: ggml-vulkan's max size is its suballocation block, a soft limit an
+    // oversized tensor legitimately exceeds with a dedicated allocation.
     std::vector<ggml_tensor *> host_only;
     if (!model.on_cpu) {
         size_t host_bytes = 0;
+        const bool hard_max = nllb_lower(ggml_backend_reg_name(ggml_backend_dev_backend_reg(pdev))) == "opencl";
+        const size_t dev_max = hard_max
+            ? ggml_backend_buft_get_max_size(ggml_backend_get_default_buffer_type(model.backend))
+            : SIZE_MAX;
         for (ggml_tensor * t = ggml_get_first_tensor(ctx_data); t; t = ggml_get_next_tensor(ctx_data, t)) {
-            if (!ggml_backend_dev_supports_op(pdev, t)) {
+            if (!ggml_backend_dev_supports_op(pdev, t) || ggml_nbytes(t) > dev_max) {
                 host_only.push_back(t);
                 host_bytes += ggml_nbytes(t);
                 if (!model.weights_host_note.empty()) model.weights_host_note += ", ";

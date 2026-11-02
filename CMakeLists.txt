@@ -38,6 +38,25 @@ if(NLLB_VULKAN)
     message(STATUS "nllb: Vulkan backend ON")
 endif()
 
+# OpenCL: -DNLLB_OPENCL=ON. BUILD needs the OpenCL headers and an ICD loader to
+# link against (Khronos OpenCL-Headers + OpenCL-ICD-Loader, or on Ubuntu
+# `apt install opencl-headers ocl-icd-opencl-dev`) and Python 3 (ggml embeds the
+# .cl kernels into the binary). RUN needs only the vendor driver. At the ggml pin
+# ggml-opencl accepts Adreno and Intel GPUs only, and needs cl_khr_fp16.
+# ggml's own defaults are Adreno defaults: GGML_OPENCL_USE_ADRENO_KERNELS is ON
+# upstream. Here it follows NLLB_ADRENO (OFF = portable kernels); the Snapdragon
+# X Elite package turns it ON. Kernels stay EMBEDDED so the binary is
+# relocatable - with embedding off ggml loads .cl files by relative path.
+option(NLLB_OPENCL "nllb: build the ggml OpenCL backend" OFF)
+option(NLLB_ADRENO "nllb: with NLLB_OPENCL, use ggml's Adreno-tuned kernels" OFF)
+
+if(NLLB_OPENCL)
+    set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_USE_ADRENO_KERNELS ${NLLB_ADRENO} CACHE BOOL "" FORCE)
+    message(STATUS "nllb: OpenCL backend ON (Adreno kernels: ${NLLB_ADRENO})")
+endif()
+
 option(NLLB_GGML_PATCHES "nllb: apply patches/ggml-*.patch to ggml" ON)
 if(NLLB_GGML_PATCHES)
     find_package(Git REQUIRED)
@@ -74,6 +93,14 @@ if(NLLB_VULKAN AND NOT TARGET ggml-vulkan)
         "find_package(Vulkan COMPONENTS glslc) needs the headers, the loader "
         "library and glslc: install the LunarG SDK and set VULKAN_SDK, or on "
         "Ubuntu `apt install libvulkan-dev glslc spirv-headers`.")
+endif()
+
+if(NLLB_OPENCL AND NOT TARGET ggml-opencl)
+    message(FATAL_ERROR
+        "NLLB_OPENCL=ON but ggml did not build its OpenCL backend. Its "
+        "find_package(OpenCL) needs the headers and an ICD loader library: "
+        "Khronos OpenCL-Headers + OpenCL-ICD-Loader, or on Ubuntu "
+        "`apt install opencl-headers ocl-icd-opencl-dev`.")
 endif()
 
 if(MSVC)

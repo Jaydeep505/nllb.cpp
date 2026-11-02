@@ -596,3 +596,82 @@ jobs:
             echo "$want: $out" | tail -1
             if echo "$out" | grep -q "is not available in this build"; then exit 1; fi
           done
+
+  # OpenCL: what a hosted runner CAN prove. It cannot run a graph - at the ggml
+  # pin ggml-opencl accepts only Adreno and Intel GPUs, and pocl (the one OpenCL
+  # implementation apt offers) is a CPU device that ggml drops at registration.
+  # So this job proves the build, that the flag does not move the CPU path, that
+  # a build with the backend in still passes the CPU gates, and that asking for
+  # OpenCL where there is no device FAILS by name instead of falling back.
+  # The graph-running acceptance is the X Elite QDC session: docs/opencl.md.
+  opencl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: OpenCL headers, ICD loader, and pocl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y opencl-headers ocl-icd-opencl-dev pocl-opencl-icd
+
+      - name: Build WITHOUT OpenCL - the baseline for the diff below
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DNLLB_BUILD_SERVER=OFF
+          cmake --build build -j"$(nproc)"
+
+      # NLLB_ADRENO=ON is what the X Elite package builds; the Adreno kernels
+      # must at least compile in the same tree.
+      - name: Build WITH OpenCL (Adreno kernels on)
+        run: |
+          cmake -B build-cl -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON -DCMAKE_BUILD_TYPE=Release -DNLLB_BUILD_SERVER=OFF
+          cmake --build build-cl -j"$(nproc)"
+
+      - name: Small shape fixtures
+        run: |
+          pip install numpy gguf
+          for t in f32 f16; do
+            python tests/make_shape_model.py models/small-$t.gguf --d-model 256 \
+                --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64 --outtype $t
+          done
+          python tests/make_shape_ref.py ref-small/ --vocab 4000 --n-ctx 64 --max-new 24 --lengths 6 12 24 40
+
+      # pocl has no cl_khr_fp16 / is not an Adreno or Intel GPU: ggml must DROP it
+      # and leave only the CPU. If this ever changes (a pocl that ggml accepts),
+      # this step goes red and graphs can start running here.
+      - name: pocl is dropped at registration, and the build still starts
+        run: |
+          ./build-cl/bin/nllb-cli --list-backends 2>&1 | tee /tmp/be.txt
+          grep -q "drop unsupported device" /tmp/be.txt
+          ! grep -q "GPUOpenCL" <(./build-cl/bin/nllb-cli --list-backends 2>/dev/null)
+
+      - name: The OpenCL flag must not move the CPU path
+        run: |
+          for t in f32 f16; do
+            ./build/bin/nllb-dump-states    models/small-$t.gguf ref-small/ /tmp/a.bin -t 2
+            ./build-cl/bin/nllb-dump-states models/small-$t.gguf ref-small/ /tmp/b.bin -t 2 --backend cpu
+            ./build-cl/bin/nllb-dump-states --diff /tmp/a.bin /tmp/b.bin | tee /tmp/diff.txt
+            grep -q "^IDENTICAL" /tmp/diff.txt
+          done
+
+      - name: CPU cache gate in the OpenCL build
+        run: ./build-cl/bin/nllb-test-cache models/small-f16.gguf ref-small/ -t 2
+
+      # With no OpenCL device, every OpenCL spelling must FAIL with the device
+      # list (a named backend never falls back); cpu and auto must still work.
+      - name: OpenCL spellings fail by name with no device; cpu/auto resolve
+        run: |
+          for want in opencl ocl OpenCL OCL GPUOpenCL; do
+            out=$(./build-cl/bin/nllb-cli -m models/small-f16.gguf --backend "$want" --tgt deu_Latn x 2>&1 || true)
+            echo "$want: $(echo "$out" | tail -1)"
+            echo "$out" | grep -q "is not available in this build" || exit 1
+          done
+          for want in cpu auto; do
+            out=$(./build-cl/bin/nllb-cli -m models/small-f16.gguf --backend "$want" --tgt deu_Latn x 2>&1 || true)
+            echo "$want: $(echo "$out" | tail -1)"
+            if echo "$out" | grep -q "is not available in this build"; then exit 1; fi
+          done

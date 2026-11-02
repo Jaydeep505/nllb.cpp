@@ -118,7 +118,9 @@ struct nllb_model {
     // = 525 MB, over the device's maxStorageBufferRange, so ggml-vulkan refuses
     // every op that touches it and the scheduler aborted on a weight it could not
     // move. With it here, get_rows and the tied lm_head run on the CPU and every
-    // other op stays on the device. Empty (null) on the CPU, Metal and CUDA.
+    // other op stays on the device. ggml-opencl's equivalent limit is
+    // CL_DEVICE_MAX_MEM_ALLOC_SIZE (the buffer type's max size), checked the
+    // same way. Empty (null) on the CPU, Metal and CUDA.
     ggml_backend_buffer * weights_buf_host = nullptr;
     std::string           weights_host_note;   // e.g. "token_embd.weight (500.3 MiB)"
     bool           weights_host_ptr   = false;   // the buffer wraps the mapping, zero-copy
