@@ -22,7 +22,7 @@ machine translation model (600M distilled):
 - Built-in tokenizer, so no Python or sentencepiece at runtime: one GGUF file is the whole model
 - Batched decoding: translate several sentences in one pass
 - Support for CPU-only inference
-- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon, [CUDA](#nvidia-gpu-support) on NVIDIA, and [Vulkan](#vulkan-gpu-support) on everything else
+- GPU backends: [Metal](#apple-silicon-support) on Apple Silicon, [CUDA](#nvidia-gpu-support) on NVIDIA, [Vulkan](#vulkan-gpu-support) on everything else, and [OpenCL](#opencl-gpu-support-experimental) for Adreno (experimental)
 - Zero memory allocations per token: the compute graph's memory is reused across decode steps
 - [1.4–1.8x faster than HF transformers, 3x less peak memory on Apple Silicon and 13x less host RAM on CUDA](docs/benchmarks.md).
 - F16 / F32 weights and [integer quantization](examples/quantize) via `nllb-quantize`
@@ -127,6 +127,21 @@ cmake --build build -j --config Release
 
 On Windows on Arm (Snapdragon X), build natively with clang - ggml refuses
 MSVC on Arm. `scripts/qdc/build-arm64.cmd` has the recipe.
+
+## OpenCL GPU support (experimental)
+
+ggml's OpenCL backend, written for Qualcomm Adreno GPUs (it also accepts Intel
+GPUs). Built and tested in CI, not yet verified on hardware: the Snapdragon X
+Elite test is described in [docs/opencl.md](docs/opencl.md).
+
+Build needs the OpenCL headers and an ICD loader (on Ubuntu
+`sudo apt install opencl-headers ocl-icd-opencl-dev`) and Python 3.
+
+```bash
+cmake -B build -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON   # NLLB_ADRENO: Adreno-tuned kernels
+cmake --build build -j --config Release
+./build/bin/nllb-cli -m models/nllb-600M-f16.gguf --backend opencl --tgt deu_Latn "Hello, world!"
+```
 
 ## Use cases
 
