@@ -1,6 +1,6 @@
-# The Snapdragon X Elite package: CPU + Vulkan, built NATIVELY on Windows on
+# The Snapdragon X Elite package: CPU + Vulkan + OpenCL, built NATIVELY on Windows on
 # Arm, tested on the CI runner's CPU, shipped as one zip for a Qualcomm Device
-# Cloud (QDC) session. Full walkthrough: docs/vulkan.md.
+# Cloud (QDC) session. Full walkthrough: docs/vulkan.md, docs/opencl.md.
 #
 #   Actions tab -> "xelite" -> Run workflow        (or push a tag xelite-*)
 #   download the artifact nllb-xelite.zip, copy it to the QDC device,
@@ -31,6 +31,9 @@ env:
   # docs/vulkan.md). A zip built on a different pin would make the QDC
   # session measure the bump. Both jobs refuse to build anything else.
   GGML_PIN: ffa4e8b
+  # Khronos OpenCL SDK pieces for the opencl\ build (headers + ICD loader,
+  # built from source for Arm64: there is no prebuilt Arm64 loader to download).
+  OPENCL_TAG: v2024.10.24
   # llama.cpp's choice for the X Elite; the runner supports it too, so the SAME
   # binary is the one tested here and on the device.
   ARM_ARCH: armv8.7-a
@@ -105,15 +108,47 @@ jobs:
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\bin"
           "vulkan_sdk=$ver" | Out-File -Append "$env:RUNNER_TEMP\build-info.txt"
 
-      # TWO builds of one commit: cpu (the reference, which always starts even
-      # if vulkan-1.dll is missing) and vulkan. Same flags apart from the one
+      # ggml-opencl embeds its .cl kernels with a Python script at build time.
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', architecture: arm64 }
+
+      # The OpenCL build links against the Khronos ICD loader (OpenCL.lib) and
+      # ships its OpenCL.dll; at run time that loader finds the Adreno driver
+      # through HKLM\SOFTWARE\Khronos\OpenCL\Vendors. Headers + loader are
+      # built for Arm64 here and installed into one prefix.
+      - name: OpenCL headers + ICD loader (Windows on Arm)
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" arm64
+          set PFX=%RUNNER_TEMP%\opencl
+          git clone --depth 1 -b %OPENCL_TAG% https://github.com/KhronosGroup/OpenCL-Headers "%RUNNER_TEMP%\OpenCL-Headers" || exit /b 1
+          cmake -S "%RUNNER_TEMP%\OpenCL-Headers" -B "%RUNNER_TEMP%\oh-build" -G Ninja -DCMAKE_INSTALL_PREFIX="%PFX%" -DBUILD_TESTING=OFF || exit /b 1
+          cmake --build "%RUNNER_TEMP%\oh-build" --target install || exit /b 1
+          rem The loader is plain C: cl.exe from vcvars is fine here (ggml's refusal of MSVC on Arm is about ggml-cpu).
+          git clone --depth 1 -b %OPENCL_TAG% https://github.com/KhronosGroup/OpenCL-ICD-Loader "%RUNNER_TEMP%\OpenCL-ICD-Loader" || exit /b 1
+          cmake -S "%RUNNER_TEMP%\OpenCL-ICD-Loader" -B "%RUNNER_TEMP%\icd-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_PREFIX_PATH="%PFX%" -DCMAKE_INSTALL_PREFIX="%PFX%" -DOPENCL_ICD_LOADER_HEADERS_DIR="%PFX%\include" -DBUILD_TESTING=OFF || exit /b 1
+          cmake --build "%RUNNER_TEMP%\icd-build" --target install || exit /b 1
+          dir "%PFX%\lib" "%PFX%\bin"
+          if not exist "%PFX%\lib\OpenCL.lib" (echo OpenCL.lib missing & exit /b 1)
+          if not exist "%PFX%\bin\OpenCL.dll" (echo OpenCL.dll missing & exit /b 1)
+          rem Static CRT, like every .exe in the zip: a wiped QDC image need not have
+          rem the VC++ redistributable, and a missing VCRUNTIME140.dll behind
+          rem OpenCL.dll would look exactly like trap 60 (0xC0000135).
+          dumpbin /dependents "%PFX%\bin\OpenCL.dll"
+          dumpbin /dependents "%PFX%\bin\OpenCL.dll" | findstr /i "vcruntime msvcp" && (echo OpenCL.dll needs the VC++ runtime & exit /b 1)
+          echo opencl_sdk=%OPENCL_TAG%>> "%RUNNER_TEMP%\build-info.txt"
+
+      # THREE builds of one commit: cpu (the reference, which always starts even
+      # if vulkan-1.dll is missing), vulkan and opencl. One backend per build so a
+      # missing driver DLL cannot stop another backend's run, and so `auto` is
+      # never ambiguous (ggml registers Vulkan before OpenCL). Same flags apart from the one
       # backend switch. Static CRT so nothing needs the VC++ redistributable on
       # a freshly wiped QDC image. The server is skipped: not needed on the device.
       # BUILD_SHARED_LIBS=OFF: on Windows ggml defaults to DLLs (ggml.dll,
       # ggml-base.dll, ggml-cpu.dll, ggml-vulkan.dll). The first QDC run died with
       # 0xC0000135 because the zip shipped the .exes without them. Static linking
       # makes every .exe self-contained; only the driver's vulkan-1.dll is external.
-      - name: Build cpu / vulkan (clang, Ninja, native Arm64)
+      - name: Build cpu / vulkan / opencl (clang, Ninja, native Arm64)
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" arm64
@@ -124,23 +159,29 @@ jobs:
           cmake --build build-cpu -j || exit /b 1
           cmake -B build-vulkan %COMMON% -DNLLB_VULKAN=ON || exit /b 1
           cmake --build build-vulkan -j || exit /b 1
+          rem NLLB_ADRENO=ON: ggml's Adreno-tuned kernels - this package only ever runs on the X1-85.
+          cmake -B build-opencl %COMMON% -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON -DOpenCL_INCLUDE_DIR="%RUNNER_TEMP%\opencl\include" -DOpenCL_LIBRARY="%RUNNER_TEMP%\opencl\lib\OpenCL.lib" || exit /b 1
+          cmake --build build-opencl -j || exit /b 1
+          copy /y "%RUNNER_TEMP%\opencl\bin\OpenCL.dll" build-opencl\bin\ || exit /b 1
 
       # What CAN be proven on a GPU-less runner: the binaries start, the CPU
-      # gate passes, and the Vulkan flag does not move the CPU path.
-      - name: CPU gates on the runner, and the Vulkan flag must not move the CPU path
+      # gate passes, and neither GPU flag moves the CPU path.
+      - name: CPU gates on the runner, and the GPU flags must not move the CPU path
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          foreach ($b in "cpu","vulkan") { & "build-$b\bin\nllb-cli.exe" --list-backends }
+          foreach ($b in "cpu","vulkan","opencl") { & "build-$b\bin\nllb-cli.exe" --list-backends }
           & build-cpu\bin\nllb-test-cache.exe models\shape-small-f16.gguf ref-shape -t 4
           if ($LASTEXITCODE) { exit 1 }
           New-Item -ItemType Directory -Force baseline | Out-Null
           foreach ($p in "f16","f32") {
             & build-cpu\bin\nllb-dump-states.exe models\shape-small-$p.gguf ref-shape baseline\runner-cpu-$p.bin -t 4
-            & build-vulkan\bin\nllb-dump-states.exe models\shape-small-$p.gguf ref-shape "$env:RUNNER_TEMP\vulkan-$p.bin" -t 4 --backend cpu
-            $d = & build-cpu\bin\nllb-dump-states.exe --diff baseline\runner-cpu-$p.bin "$env:RUNNER_TEMP\vulkan-$p.bin"
-            $d | Out-Host
-            if (-not ($d -match "^IDENTICAL")) { Write-Error "vulkan build moved the CPU path at $p" }
+            foreach ($g in "vulkan","opencl") {
+              & build-$g\bin\nllb-dump-states.exe models\shape-small-$p.gguf ref-shape "$env:RUNNER_TEMP\$g-$p.bin" -t 4 --backend cpu
+              $d = & build-cpu\bin\nllb-dump-states.exe --diff baseline\runner-cpu-$p.bin "$env:RUNNER_TEMP\$g-$p.bin"
+              $d | Out-Host
+              if (-not ($d -match "^IDENTICAL")) { Write-Error "$g build moved the CPU path at $p" }
+            }
           }
 
       - name: Package nllb-xelite.zip
@@ -149,15 +190,17 @@ jobs:
           $ErrorActionPreference = "Stop"
           $pkg = "nllb-xelite"
           $exes = "nllb-cli","nllb-test-cache","nllb-test-precision","nllb-test-batch","nllb-dump-states","nllb-bench","nllb-probe-kv-ops"
-          foreach ($b in "cpu","vulkan") {
+          foreach ($b in "cpu","vulkan","opencl") {
             New-Item -ItemType Directory -Force "$pkg\$b" | Out-Null
             foreach ($e in $exes) { Copy-Item "build-$b\bin\$e.exe" "$pkg\$b\" }
-            # belt and braces: ship any DLL the build produced (none expected when static)
+            # belt and braces: ship any DLL the build produced. Only opencl\ has
+            # one by design: the Khronos loader OpenCL.dll.
             Get-ChildItem "build-$b\bin\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$pkg\$b\"
           }
           # Run every packaged .exe FROM THE PACKAGE, not from the build dir, so a
           # missing DLL fails here instead of on the device. 0xC0000135 = -1073741515.
-          foreach ($b in "cpu","vulkan") {
+          if (-not (Test-Path "$pkg\opencl\OpenCL.dll")) { throw "opencl\OpenCL.dll is not in the package" }
+          foreach ($b in "cpu","vulkan","opencl") {
             foreach ($e in $exes) {
               $p = Start-Process -FilePath "$pkg\$b\$e.exe" -ArgumentList "--help" -NoNewWindow -Wait -PassThru `
                      -RedirectStandardOutput "$env:RUNNER_TEMP\o.txt" -RedirectStandardError "$env:RUNNER_TEMP\e.txt"
@@ -167,7 +210,7 @@ jobs:
             if ($LASTEXITCODE) { throw "$b\nllb-cli.exe --list-backends failed from the package" }
           }
           Copy-Item -Recurse models, ref-shape, baseline "$pkg\"
-          Copy-Item scripts\qdc\run.ps1, scripts\qdc\sentences.txt, docs\vulkan.md "$pkg\"
+          Copy-Item scripts\qdc\run.ps1, scripts\qdc\sentences.txt, docs\vulkan.md, docs\opencl.md "$pkg\"
           $info = @(
             "commit=$env:GITHUB_SHA",
             "ggml=$(git -C ggml describe --tags --always)",

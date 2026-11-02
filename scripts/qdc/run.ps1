@@ -8,13 +8,18 @@
 # Everything lands in .\results\ (plus results.zip) - copy that back with scp
 # or the QDC file browser BEFORE the session ends: QDC wipes the device.
 #
-# The zip holds TWO builds of the same commit, on purpose:
-#   cpu\     no device backend at all. Always starts, even if vulkan-1.dll is
+# The zip holds THREE builds of the same commit, on purpose:
+#   cpu\     no device backend at all. Always starts, even if a GPU driver is
 #            missing, and is the reference every GPU number is measured against.
 #   vulkan\  -DNLLB_VULKAN=ON   (vulkan-1.dll comes from the Adreno driver)
+#   opencl\  -DNLLB_OPENCL=ON -DNLLB_ADRENO=ON. OpenCL.dll (Khronos ICD loader)
+#            is shipped next to the .exes; it finds the Adreno driver through
+#            HKLM\SOFTWARE\Khronos\OpenCL\Vendors.
+#
+# One backend only:  .\run.ps1 -Backends opencl
 #
 # Sections, in the order that each one's answer is assumed by the next:
-#   0  environment      is vulkan-1.dll there, what the CPU and GPU are
+#   0  environment      vulkan-1.dll, the OpenCL ICD registry, CPU and GPU
 #   1  probe            nllb-probe-kv-ops: the 4 KV-cache ops, device vs CPU
 #   2  registry         --list-backends from each build
 #   3  CPU bit-identity this device's CPU path vs the CI runner's, same binary
@@ -27,7 +32,7 @@ param(
     [string] $Model   = "",          # real nllb-600M-f16.gguf (optional)
     [string] $Ref     = "",          # its ref\ directory from the Mac (optional)
     [int]    $Threads = 8,
-    [string[]] $Backends = @("vulkan"),
+    [string[]] $Backends = @("vulkan", "opencl"),
     [switch] $SkipFixture
 )
 
@@ -83,6 +88,27 @@ foreach ($dll in @("vulkan-1.dll")) {
     if (Test-Path $p) { Note ("  {0,-14} {1}  ({2})" -f $dll, "present", (Get-Item $p).VersionInfo.FileVersion) }
     else              { Note ("  {0,-14} ABSENT from System32" -f $dll) }
 }
+# OpenCL: the shipped loader is only half of it. The driver registers its ICD
+# here; no entry means the loader finds no platform and ggml says
+# "platform IDs not available" - a driver fact, not a bug.
+$icdKeys = @("HKLM:\SOFTWARE\Khronos\OpenCL\Vendors")
+$icdFound = $false
+foreach ($k in $icdKeys) {
+    if (Test-Path $k) {
+        $props = (Get-Item $k).Property
+        foreach ($v in $props) { Note ("  OpenCL ICD     {0}" -f $v); $icdFound = $true }
+    }
+}
+# Windows also lets a display driver register its ICD under the adapter's
+# registry key (OpenCLDriverNameWow / OpenCLDriverName); the loader reads those too.
+Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}" -ErrorAction SilentlyContinue |
+    ForEach-Object { $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue; if ($p.OpenCLDriverName) { Note ("  OpenCL ICD     {0} (adapter key)" -f $p.OpenCLDriverName); $icdFound = $true } }
+if (-not $icdFound) { Note "  OpenCL ICD     NONE registered - expect no OpenCL platform" }
+foreach ($d in @("opencl\OpenCL.dll")) {
+    $p = Join-Path $Root $d
+    if (Test-Path $p) { Note ("  {0,-14} {1}  ({2})" -f $d, "shipped", (Get-Item $p).VersionInfo.FileVersion) }
+    else              { Note ("  {0,-14} MISSING from the package" -f $d) }
+}
 Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List | Out-String | Tee-Object -FilePath (Join-Path $Out "env.txt") | Out-Host
 Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, DriverDate | Format-List | Out-String | Tee-Object -FilePath (Join-Path $Out "env.txt") -Append | Out-Host
 Get-Content (Join-Path $Root "BUILD-INFO.txt") -ErrorAction SilentlyContinue | Tee-Object -FilePath (Join-Path $Out "env.txt") -Append | Out-Host
@@ -92,18 +118,28 @@ Get-Content (Join-Path $Root "BUILD-INFO.txt") -ErrorAction SilentlyContinue | T
 # ok or half (half = the GPU ran an f16 matmul kernel, trap 48). A BAD row in
 # "mul_mat(K view, q)" is trap 55 (a gapped batch stride ignored) coming back
 # on this driver: then section 4's retry with NLLB_KV_CONT=1 is the workaround.
+$probeRc = @{}
 foreach ($b in $Backends) {
-    $rc = Run "1-probe-kv-ops-$b" "$Root\$b\nllb-probe-kv-ops.exe" @($b)
-    $script:probeRc = $rc
+    $probeRc[$b] = Run "1-probe-kv-ops-$b" "$Root\$b\nllb-probe-kv-ops.exe" @($b)
 }
 
 # ---------------------------------------------------------------- 2
 foreach ($b in @("cpu") + $Backends) {
     Run "2-list-backends-$b" "$Root\$b\nllb-cli.exe" @("--list-backends") | Out-Null
 }
+# A backend whose build registered no device would fail every gate below with
+# the same "not available" line. Say so ONCE, with the reason file, and skip it.
+$Missing = @()
+foreach ($b in $Backends) {
+    $lb = Join-Path $Out "2-list-backends-$b.txt"
+    $txt = if (Test-Path $lb) { Get-Content -Raw $lb } else { "" }
+    if (-not ($txt -match "(?m)^\S+ - .*\((gpu|igpu)\)")) { $Missing += $b }
+}
 
 Note "`n----- SUMMARY -----"
-if ($Backends.Count -gt 0) { Verdict "kv-op probe vulkan" $script:probeRc "4 KV-cache ops vs CPU, no BAD row" }
+foreach ($b in $Missing) { Note ("  {0,-34} {1,-16} {2}" -f "$b device", "NOT REGISTERED", "skipped; ggml's reason is in 2-list-backends-$b.txt") }
+$Backends = @($Backends | Where-Object { $Missing -notcontains $_ })
+foreach ($b in $Backends) { Verdict "kv-op probe $b" $probeRc[$b] "4 KV-cache ops vs CPU, no BAD row" }
 
 if (-not $SkipFixture) {
     # ------------------------------------------------------------ 3
