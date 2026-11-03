@@ -128,6 +128,11 @@ jobs:
           git clone --depth 1 -b %OPENCL_TAG% https://github.com/KhronosGroup/OpenCL-ICD-Loader "%RUNNER_TEMP%\OpenCL-ICD-Loader" || exit /b 1
           cmake -S "%RUNNER_TEMP%\OpenCL-ICD-Loader" -B "%RUNNER_TEMP%\icd-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_PREFIX_PATH="%PFX%" -DCMAKE_INSTALL_PREFIX="%PFX%" -DOPENCL_ICD_LOADER_HEADERS_DIR="%PFX%\include" -DBUILD_TESTING=OFF || exit /b 1
           cmake --build "%RUNNER_TEMP%\icd-build" --target install || exit /b 1
+          rem The loader's install() names only a LIBRARY destination, so on Windows
+          rem the DLL goes to bin\ but the import library OpenCL.lib (an ARCHIVE
+          rem artifact) is never installed. Take it from the build tree.
+          if not exist "%PFX%\lib" mkdir "%PFX%\lib"
+          for /r "%RUNNER_TEMP%\icd-build" %%f in (OpenCL.lib) do if exist "%%f" copy /y "%%f" "%PFX%\lib\" >nul
           dir "%PFX%\lib" "%PFX%\bin"
           if not exist "%PFX%\lib\OpenCL.lib" (echo OpenCL.lib missing & exit /b 1)
           if not exist "%PFX%\bin\OpenCL.dll" (echo OpenCL.dll missing & exit /b 1)
