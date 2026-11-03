@@ -124,16 +124,22 @@ jobs:
           git clone --depth 1 -b %OPENCL_TAG% https://github.com/KhronosGroup/OpenCL-Headers "%RUNNER_TEMP%\OpenCL-Headers" || exit /b 1
           cmake -S "%RUNNER_TEMP%\OpenCL-Headers" -B "%RUNNER_TEMP%\oh-build" -G Ninja -DCMAKE_INSTALL_PREFIX="%PFX%" -DBUILD_TESTING=OFF || exit /b 1
           cmake --build "%RUNNER_TEMP%\oh-build" --target install || exit /b 1
-          rem The loader is plain C: cl.exe from vcvars is fine here (ggml's refusal of MSVC on Arm is about ggml-cpu).
+          rem Which compilers are visible. Without -DCMAKE_C_COMPILER the loader was
+          rem built by a GNU toolchain from PATH (libOpenCL.dll.a, no OpenCL.lib) and
+          rem dumpbin was not found: vcvars did not reach this step. clang, like the
+          rem ggml builds below, finds the MSVC libraries itself and gives OpenCL.lib.
+          where clang cl gcc llvm-readobj llvm-rc 2>nul
           git clone --depth 1 -b %OPENCL_TAG% https://github.com/KhronosGroup/OpenCL-ICD-Loader "%RUNNER_TEMP%\OpenCL-ICD-Loader" || exit /b 1
-          cmake -S "%RUNNER_TEMP%\OpenCL-ICD-Loader" -B "%RUNNER_TEMP%\icd-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_PREFIX_PATH="%PFX%" -DCMAKE_INSTALL_PREFIX="%PFX%" -DOPENCL_ICD_LOADER_HEADERS_DIR="%PFX%\include" -DBUILD_TESTING=OFF || exit /b 1
+          cmake -S "%RUNNER_TEMP%\OpenCL-ICD-Loader" -B "%RUNNER_TEMP%\icd-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_RC_COMPILER=llvm-rc -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_PREFIX_PATH="%PFX%" -DCMAKE_INSTALL_PREFIX="%PFX%" -DOPENCL_ICD_LOADER_HEADERS_DIR="%PFX%\include" -DBUILD_TESTING=OFF || exit /b 1
           cmake --build "%RUNNER_TEMP%\icd-build" --target install || exit /b 1
           if not exist "%PFX%\bin\OpenCL.dll" (echo OpenCL.dll missing & exit /b 1)
           rem Static CRT, like every .exe in the zip: a wiped QDC image need not have
           rem the VC++ redistributable, and a missing VCRUNTIME140.dll behind
           rem OpenCL.dll would look exactly like trap 60 (0xC0000135).
-          dumpbin /dependents "%PFX%\bin\OpenCL.dll"
-          dumpbin /dependents "%PFX%\bin\OpenCL.dll" | findstr /i "vcruntime msvcp" && (echo OpenCL.dll needs the VC++ runtime & exit /b 1)
+          rem llvm-readobj ships with LLVM (on PATH); dumpbin needs vcvars. Also refuse
+          rem a GNU-built loader (libgcc / winpthread imports).
+          llvm-readobj --coff-imports "%PFX%\bin\OpenCL.dll" | findstr /i /c:"Name:"
+          llvm-readobj --coff-imports "%PFX%\bin\OpenCL.dll" | findstr /i "vcruntime msvcp libgcc winpthread" && (echo OpenCL.dll needs a runtime DLL the QDC image may not have & exit /b 1)
           echo opencl_sdk=%OPENCL_TAG%>> "%RUNNER_TEMP%\build-info.txt"
 
       # The import library the opencl\ build links against. The loader's
