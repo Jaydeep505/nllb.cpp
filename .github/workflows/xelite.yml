@@ -141,6 +141,10 @@ jobs:
           llvm-readobj --coff-imports "%PFX%\bin\OpenCL.dll" | findstr /i /c:"Name:"
           llvm-readobj --coff-imports "%PFX%\bin\OpenCL.dll" | findstr /i "vcruntime msvcp libgcc winpthread" && (echo OpenCL.dll needs a runtime DLL the QDC image may not have & exit /b 1)
           echo opencl_sdk=%OPENCL_TAG%>> "%RUNNER_TEMP%\build-info.txt"
+          rem The findstr above exits 1 when it finds NOTHING - the good case - and
+          rem echo does not reset ERRORLEVEL, so the step would end red. Every real
+          rem failure above has already done its own exit /b 1.
+          exit /b 0
 
       # The import library the opencl\ build links against. The loader's
       # install() names only a LIBRARY destination, so on Windows the import
