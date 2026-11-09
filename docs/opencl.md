@@ -4,8 +4,10 @@ nllb.cpp's OpenCL backend (`-DNLLB_OPENCL=ON`) is ggml's OpenCL backend, which
 is written for Qualcomm Adreno GPUs. At the pinned ggml (`ffa4e8b`) it accepts
 **Adreno and Intel GPUs only**, and needs `cl_khr_fp16`.
 
-**Status: built and CI-guarded, not yet run on hardware.** The results table
-below is filled in by the QDC session described here.
+**Status: runs on the Adreno X1-85** (QDC, fixture session, 2026-11-09). Every
+graph runs entirely on the GPU (`splits 1`), ids match the CPU exactly, and the
+cache layout is bit-exact. Two ggml-opencl kernel issues were found and are
+handled (below). Real-model text and speed: not measured yet.
 
 ## Build
 
@@ -107,18 +109,45 @@ builds: `cpu\`, `vulkan\` and `opencl\`.
   Adreno-specific GEMV paths that ggml-vulkan lacks, so the gap may close.
   That is the measurement to make.
 
+## Two ggml-opencl issues found on the X1-85
+
+**Trap 63: `diag_mask_inf` gives NaN at row lengths that are multiples of 8.**
+ggml-opencl switches to `kernel_diag_mask_inf_8` when `ne00 % 8 == 0`. On the
+X1-85 the un-cached decoder's logits came out NaN at a prefix of exactly 8
+tokens, in all four fixture cases; `GGML_OPENCL_OPFILTER=DIAG_MASK_INF` (which
+moves only that op to the CPU) turned the cache gate from MISMATCH to PASS, and
+`SOFT_MAX` did not. Only the un-cached decoder uses this op - the cached step,
+which generation uses, builds its mask as data - so translation was never
+affected; `nllb_decode` and `nllb_generate` without a cache were.
+nllb.cpp now pins that one op to the CPU on OpenCL
+(`nllb_model::diag_mask_on_cpu`, `NLLB_DIAG_MASK_CPU=0/1` to override), and
+`nllb-probe-kv-ops` has a `soft_max(diag_mask(kq))` row that shows whether a
+backend still needs it. The precision gate missed this because its sequences
+are 25 tokens long - never a multiple of 8.
+
+**Adreno's half-precision GEMM (trap 48 again).** ggml-opencl enables an
+F16xF32 "xmem" GEMM on Adreno by default, so wide matmuls round their inputs to
+half. A batch of 4 rows and 4 single calls then take different kernels:
+`[equal]` in the batch gate measured 1.58e-03 with it and 7.1e-07 with
+`GGML_OPENCL_ADRENO_XMEM_GEMM=0`. Batching itself is exact (`[perm]` and
+`[mask]` bit-identical either way). `run.ps1` asserts the batch gate with it
+off and reports it with it on; whether nllb should turn it off by default is a
+speed-vs-consistency choice for the real-model bench.
+
 ## Results
 
-*To be filled in from the QDC session.*
+Fixture session, Adreno X1-85, ggml `ffa4e8b`, before the trap-63 workaround
+(rerun with it pending):
 
 | Check | Model | Result |
 |---|---|---|
-| OpenCL ICD / device | - | |
-| KV-cache ops, device vs CPU | - | |
-| Cache gate f32 / f16 | fixture | |
-| CPU vs OpenCL ids + margins f32 / f16 | fixture | |
-| Batching gate | fixture | |
-| Translation text, CPU vs OpenCL | real 600M f16 | |
+| OpenCL device | - | `GPUOpenCL`, registered |
+| KV-cache ops, device vs CPU | - | PASS (no BAD row) |
+| Graph placement | fixture | `splits 1` on every graph incl. the cached step |
+| Cache gate f32 / f16 | fixture | `full = exact`, `[arena]` exact; MISMATCH from the un-cached reference (trap 63). PASS with the mask op on the CPU |
+| CPU vs OpenCL ids + margins f32 / f16 | fixture | PASS |
+| Batching gate f16 | fixture | PASS with xmem GEMM off; `[equal]` 1.58e-03 with it on |
+| Translation text, CPU vs OpenCL | real 600M f16 | not yet run |
 
 | | CPU (Oryon) | Vulkan | OpenCL |
 |---|---|---|---|

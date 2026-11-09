@@ -112,6 +112,14 @@ struct nllb_model {
     // workaround for trap 55, which the current ggml pin fixes. The copy is
     // exact, so it moves no float on any backend.
     bool           kv_k_cont   = false;
+    // Trap 63: run ggml_diag_mask_inf (the un-cached decoder's causal mask)
+    // on the CPU. ggml-opencl at ffa4e8b produces NaN logits whenever the row
+    // length is a multiple of 8 (kernel_diag_mask_inf_8) - measured on the
+    // Adreno X1-85: the cache gate's un-cached reference went NaN at a prefix
+    // of 8, and GGML_OPENCL_OPFILTER=DIAG_MASK_INF made it PASS. ON for OpenCL
+    // by default; NLLB_DIAG_MASK_CPU=0/1 overrides. The cached step, which is
+    // what generation uses, builds its mask as data and is not affected.
+    bool           diag_mask_on_cpu = false;
     ggml_backend_buffer * weights_buf = nullptr;
     // Weights the primary device cannot run ANY op on, kept in CPU memory instead
     // (trap 61). On the Adreno X1-85 that is token_embd.weight: 256206 x 1024 f16

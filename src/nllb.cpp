@@ -192,8 +192,14 @@ size_t nllb_sched_bytes(ggml_backend_sched * s) {
 }
 
 bool nllb_alloc_graph(ggml_backend_sched * s, ggml_cgraph * gf, const char * what,
-                      std::string & err) {
+                      std::string & err, ggml_backend_t pin_backend = nullptr,
+                      const std::vector<ggml_tensor *> * pins = nullptr) {
     ggml_backend_sched_reset(s);
+    // Pin individual nodes to a backend (trap 63). After the reset, which
+    // clears every assignment, and before alloc, which splits the graph.
+    if (pin_backend && pins) {
+        for (ggml_tensor * t : *pins) ggml_backend_sched_set_tensor_backend(s, t, pin_backend);
+    }
     if (!ggml_backend_sched_alloc_graph(s, gf)) {
         err = std::string("ggml_backend_sched_alloc_graph failed (") + what + ")";
         return false;
@@ -473,6 +479,15 @@ bool nllb_model_load(const std::string & path, nllb_model & model, std::string &
         // without the copy). Kept as an opt-in diagnostic: NLLB_KV_CONT=1
         // inserts an exact ggml_cont before the matmul on any backend.
         if (const char * e = ::getenv("NLLB_KV_CONT")) model.kv_k_cont = *e == '1';
+
+        // Trap 63 (see nllb_model::diag_mask_on_cpu): ggml-opencl's 8-wide
+        // diag_mask_inf kernel gives NaN; pin that op to the CPU on OpenCL.
+        if (!model.on_cpu) {
+            const std::string reg = nllb_lower(ggml_backend_reg_name(
+                    ggml_backend_dev_backend_reg(ggml_backend_get_device(model.backend))));
+            model.diag_mask_on_cpu = reg == "opencl";
+        }
+        if (const char * e = ::getenv("NLLB_DIAG_MASK_CPU")) model.diag_mask_on_cpu = *e == '1';
     }
 
     // Try the mapping FIRST. gguf is ALWAYS parsed with no_alloc = true now:
@@ -1028,6 +1043,7 @@ bool nllb_decode(const nllb_model & model,
     cur = ggml_add(ctx, cur, ggml_get_rows(ctx, model.pos_embd, inp_pos));
 
     std::vector<ggml_tensor *> hs;
+    std::vector<ggml_tensor *> cpu_pins;   // nodes pinned to the CPU backend (trap 63)
     hs.reserve(L + 1);
 
     const float attn_scale = 1.0f / std::sqrt((float) HD);
@@ -1068,6 +1084,7 @@ bool nllb_decode(const nllb_model & model,
         // on the CPU fallback - in the reference path only, and it is the one
         // place the fallback is exercised on purpose.
         kq = ggml_diag_mask_inf(ctx, kq, 0);
+        if (model.diag_mask_on_cpu) cpu_pins.push_back(kq);   // trap 63
         kq = ggml_soft_max_ext(ctx, kq, nullptr, 1.0f, 0.0f);
         ggml_tensor * kqv = ggml_mul_mat(ctx, V, kq);              // (HD, Td, H)
 
@@ -1147,7 +1164,7 @@ bool nllb_decode(const nllb_model & model,
     }
 
     ggml_backend_sched * sched = model.sched;
-    bool ok = nllb_alloc_graph(sched, gf, "decoder", err);
+    bool ok = nllb_alloc_graph(sched, gf, "decoder", err, model.backend_cpu, &cpu_pins);
     if (ok) {
         ggml_backend_tensor_set(inp_ids, dec_ids.data(), 0, (size_t) Td * sizeof(int32_t));
         ggml_backend_tensor_set(inp_pos, pos.data(),     0, (size_t) Td * sizeof(int32_t));

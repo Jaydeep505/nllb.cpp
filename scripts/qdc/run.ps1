@@ -139,7 +139,18 @@ foreach ($b in $Backends) {
 Note "`n----- SUMMARY -----"
 foreach ($b in $Missing) { Note ("  {0,-34} {1,-16} {2}" -f "$b device", "NOT REGISTERED", "skipped; ggml's reason is in 2-list-backends-$b.txt") }
 $Backends = @($Backends | Where-Object { $Missing -notcontains $_ })
-foreach ($b in $Backends) { Verdict "kv-op probe $b" $probeRc[$b] "4 KV-cache ops vs CPU, no BAD row" }
+foreach ($b in $Backends) {
+    # Trap 63: the probe's soft_max(diag_mask(kq)) row is BAD on ggml-opencl
+    # at row lengths that are multiples of 8. nllb pins that op to the CPU on
+    # OpenCL, so a FAIL made ONLY of those rows is known and worked around.
+    $pl = Join-Path $Out "1-probe-kv-ops-$b.txt"
+    $bad = @(Get-Content $pl -ErrorAction SilentlyContinue | Where-Object { $_ -match "\bBAD\b" })
+    if ($probeRc[$b] -ne 0 -and $bad.Count -gt 0 -and -not ($bad | Where-Object { $_ -notmatch "^soft_max\(diag_mask" })) {
+        Note ("  {0,-34} {1,-16} {2}" -f "kv-op probe $b", "KNOWN (trap 63)", "only diag_mask rows BAD ($($bad.Count)); nllb pins that op to the CPU")
+    } else {
+        Verdict "kv-op probe $b" $probeRc[$b] "KV-cache ops + causal mask vs CPU, no BAD row"
+    }
+}
 
 if (-not $SkipFixture) {
     # ------------------------------------------------------------ 3
@@ -179,8 +190,20 @@ if (-not $SkipFixture) {
             $rc = Run "5-precision-cpu-$b-$p" "$bin\nllb-test-precision.exe" @($fx, $fx, $FxRef, "-t", $T, "--backend", "cpu:$b")
             Verdict "precision cpu:$b $p" $rc "exact ids + margin audit"
         }
-        $rc = Run "5-batch-$b-f16" "$bin\nllb-test-batch.exe" @($Fx16, "-t", $T, "--backend", $b)
-        Verdict "batch gate $b f16" $rc "[equal]/[perm]/[mask] bit-identical"
+        if ($b -eq "opencl") {
+            # Adreno's xmem F16xF32 GEMM (ggml default ON) runs wide matmuls in
+            # half, so a batch of 4 and 4 single calls pick different kernels:
+            # [equal] measured 1.58e-03 with it, 7.1e-07 without. The batching
+            # ASSERTION runs with it off; the default is a report (trap 48).
+            $rc = Run "5-batch-$b-f16" "$bin\nllb-test-batch.exe" @($Fx16, "-t", $T, "--backend", $b) @{ GGML_OPENCL_ADRENO_XMEM_GEMM = "0" }
+            Verdict "batch gate $b f16 (xmem off)" $rc "[equal]/[perm]/[mask] - batching arithmetic"
+            $rc = Run "5-batch-$b-f16-xmem" "$bin\nllb-test-batch.exe" @($Fx16, "-t", $T, "--backend", $b)
+            $s = if ($rc -eq 0) { "PASS" } else { "differs (report)" }
+            Note ("  {0,-34} {1,-16} {2}" -f "batch gate $b f16 (xmem on)", $s, "half-precision GEMM: [equal] ~1e-3 expected")
+        } else {
+            $rc = Run "5-batch-$b-f16" "$bin\nllb-test-batch.exe" @($Fx16, "-t", $T, "--backend", $b)
+            Verdict "batch gate $b f16" $rc "[equal]/[perm]/[mask] bit-identical"
+        }
         # -------------------------------------------------------- 6
         # A REPORT, not a gate: a GPU is not expected to be bit-identical to
         # the CPU (trap 48 - the kernel decides the precision). The size of the
@@ -225,6 +248,10 @@ if ($Model -and (Test-Path $Model)) {
                 ((Get-FileHash $cpuOut).Hash -eq (Get-FileHash $gpuOut).Hash)
         Verdict "REAL text cpu vs $b" ([int](-not $same)) ("stdout byte-identical ({0}/{1}/{2} lines in/cpu/{3})" -f $nIn, $cpuL.Count, $gpuL.Count, $b)
         Run "7-bench-$b-real" "$bin\nllb-bench.exe" @($Model, "-t", $T, "--src", "24", "--steps", "64") @{ NLLB_BACKEND = $b; NLLB_ARENA_TRACE = "1" } | Out-Null
+        if ($b -eq "opencl") {
+            # What the half-precision GEMM buys: the encoder is where it applies.
+            Run "7-bench-$b-real-xmem-off" "$bin\nllb-bench.exe" @($Model, "-t", $T, "--src", "24", "--steps", "64") @{ NLLB_BACKEND = $b; GGML_OPENCL_ADRENO_XMEM_GEMM = "0" } | Out-Null
+        }
     }
     Run "7-bench-cpu-real" "$Root\cpu\nllb-bench.exe" @($Model, "-t", $T, "--src", "24", "--steps", "64") | Out-Null
 }

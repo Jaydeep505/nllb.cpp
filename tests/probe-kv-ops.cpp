@@ -131,19 +131,38 @@ int main(int argc, char ** argv) {
               ggml_tensor * Vv = ggml_view_3d(ctx, vc, n_kv, HD, H, vc->nb[1], vc->nb[2], 0);
               ggml_tensor * kq = ggml_reshape_3d(ctx, ggml_view_1d(ctx, x, (int64_t) n_kv * Tn * H, 0), n_kv, Tn, H);
               return ggml_mul_mat(ctx, Vv, kq); }, false },
+        // Trap 63 canary. Not a cache op: the UN-CACHED decoder's causal mask
+        // (ggml_diag_mask_inf) followed by its softmax, on a contiguous kq.
+        // ggml-opencl at ffa4e8b returns NaN when the row length is a multiple
+        // of 8 (kernel_diag_mask_inf_8); nllb pins the op to the CPU there
+        // (nllb_model::diag_mask_on_cpu). This row says whether the backend
+        // still needs that: n_kv = 8 and 16 are the rows to read.
+        { "soft_max(diag_mask(kq))", [&](ggml_context * ctx, ggml_tensor *, ggml_tensor *, ggml_tensor * x, int n_past, int Tn) {
+              const int n_kv = n_past + Tn;
+              ggml_tensor * kq = ggml_reshape_3d(ctx, ggml_view_1d(ctx, x, (int64_t) n_kv * Tn * H, 0), n_kv, Tn, H);
+              kq = ggml_diag_mask_inf(ctx, kq, n_past);
+              return ggml_soft_max_ext(ctx, kq, nullptr, 1.0f, 0.0f); }, false },
     };
 
-    int n_bad = 0;
+    int n_bad = 0, n_comb = 0;
     std::printf("%-22s %4s %6s  %-12s %s\n", "op", "Tn", "n_past", "max rel", "verdict");
     for (const Case & c : cases) {
-        for (int Tn : { 1, 3, 9 }) {
-            for (int n_past : { 0, 5, 20 }) {
+        // The mask row adds Tn = 8 so n_past = 0 gives the un-cached decoder's
+        // exact shape at a multiple of 8 (8x8 and, with n_past = 8 below, 16).
+        const bool is_mask = std::strncmp(c.name, "soft_max", 8) == 0;
+        const std::vector<int> tns  = is_mask ? std::vector<int>{ 1, 3, 8, 9 } : std::vector<int>{ 1, 3, 9 };
+        const std::vector<int> pasts = is_mask ? std::vector<int>{ 0, 5, 8, 20 } : std::vector<int>{ 0, 5, 20 };
+        for (int Tn : tns) {
+            for (int n_past : pasts) {
+                ++n_comb;
                 std::vector<float> a = run(cpu, c, HD, H, n_ctx, n_past, Tn);
                 std::vector<float> b = run(gpu, c, HD, H, n_ctx, n_past, Tn);
                 double worst = 0, amax = 0;
                 size_t n_diff = 0;
                 for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
-                    const double d = std::fabs((double) a[i] - b[i]);
+                    double d = std::fabs((double) a[i] - b[i]);
+                    // NaN must count: std::max(worst, NaN) silently keeps worst.
+                    if (std::isnan(d) && !(std::isnan(a[i]) && std::isnan(b[i]))) d = INFINITY;
                     amax = std::max(amax, (double) std::fabs(a[i]));
                     if (d > 0) ++n_diff;
                     worst = std::max(worst, d);
@@ -161,7 +180,7 @@ int main(int argc, char ** argv) {
             }
         }
     }
-    std::printf("%s - %d of %zu combinations disagree with the CPU\n", n_bad ? "FAIL" : "PASS", n_bad, cases.size() * 9);
+    std::printf("%s - %d of %zu combinations disagree with the CPU\n", n_bad ? "FAIL" : "PASS", n_bad, (size_t) n_comb);
     ggml_backend_free(gpu);
     ggml_backend_free(cpu);
     return n_bad ? 1 : 0;
