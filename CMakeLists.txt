@@ -23,6 +23,30 @@ if(NLLB_CUDA)
     endif()
 endif()
 
+# HIP (AMD ROCm): -DNLLB_HIP=ON. ggml-hip compiles the SAME sources as
+# ggml-cuda (ggml/src/ggml-cuda/*.cu) with AMD's clang, so the two cannot be
+# linked into one binary. BUILD needs ROCm >= 6.1 with hip, hipblas and rocblas
+# (the rocm/dev-ubuntu-* images plus `apt install hipblas-dev rocblas-dev`, or
+# any "ROCm quick start" cloud image) and CMake >= 3.21. Point CMake at AMD's
+# clang and name the GPU family, or the build targets whatever is installed:
+#   cmake -B build -DNLLB_HIP=ON -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+#         -DGPU_TARGETS=gfx942
+# gfx942 = Instinct MI300X/MI325X, gfx90a = MI200, gfx1100 = Radeon RX 7900,
+# gfx1201 = RX 9070. ggml names the device "ROCm0"; `--backend rocm` or `hip`.
+option(NLLB_HIP "nllb: build the ggml HIP (AMD ROCm) backend" OFF)
+
+if(NLLB_HIP)
+    if(NLLB_CUDA)
+        message(FATAL_ERROR "NLLB_HIP and NLLB_CUDA are mutually exclusive: ggml-hip and ggml-cuda are the same sources built twice.")
+    endif()
+    set(GGML_HIP ON CACHE BOOL "" FORCE)
+    if(GPU_TARGETS OR AMDGPU_TARGETS OR CMAKE_HIP_ARCHITECTURES)
+        message(STATUS "nllb: HIP backend ON (targets ${GPU_TARGETS}${AMDGPU_TARGETS}${CMAKE_HIP_ARCHITECTURES})")
+    else()
+        message(STATUS "nllb: HIP backend ON, GPU target NOT pinned. Pass -DGPU_TARGETS=<gfx> (gfx942 MI300X, gfx90a MI200, gfx1100 RX 7900, gfx1201 RX 9070).")
+    endif()
+endif()
+
 # Vulkan: -DNLLB_VULKAN=ON. BUILD needs the Vulkan headers + loader, glslc and
 # SPIRV-Headers (LunarG SDK with VULKAN_SDK set, or on Ubuntu
 # `apt install libvulkan-dev glslc spirv-headers`); RUN needs only the driver's
@@ -85,6 +109,13 @@ if(NLLB_CUDA AND NOT TARGET ggml-cuda)
         "find_package(CUDAToolkit) found no toolkit: install one and put nvcc "
         "on PATH, or point -DCUDAToolkit_ROOT at it. `nvcc --version` is the "
         "check.")
+endif()
+
+if(NLLB_HIP AND NOT TARGET ggml-hip)
+    message(FATAL_ERROR
+        "NLLB_HIP=ON but ggml did not build its HIP backend. It needs ROCm "
+        ">= 6.1 with hip, hipblas and rocblas where CMake can find them "
+        "(ROCM_PATH, default /opt/rocm). `hipconfig --version` is the check.")
 endif()
 
 if(NLLB_VULKAN AND NOT TARGET ggml-vulkan)

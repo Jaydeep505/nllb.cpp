@@ -43,6 +43,13 @@ pip install -r scripts/requirements-verify.txt
 |---|---|
 | `step10-measure.sh` | runs the precision and quantization checks on f32/f16 GGUF files |
 
+## Cloud GPU runs
+
+| file | what it does |
+|---|---|
+| `qdc/` | build and run kit for the Snapdragon X Elite on Qualcomm Device Cloud |
+| `amd/run-mi300x.sh` | one-command ROCm/HIP acceptance run for a rented AMD GPU (builds, runs every backend gate with `--backend rocm`, writes `results-rocm/SUMMARY.txt`) |
+
 ## Publishing (maintainer only)
 
 | file | what it does |

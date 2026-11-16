@@ -45,3 +45,7 @@ build-ios-sim/
 build-ios-device/
 build-macos/
 xcf.log
+
+qdc-real-*.zip
+ref.zip
+xelite-dl/

@@ -309,9 +309,13 @@ bool nllb_pick_device(const std::string & want_in, ggml_backend_dev_t & dev,
     // other. The supported device backends are Metal, CUDA, Vulkan and
     // OpenCL. ggml names the OpenCL device "GPUOpenCL" and its registry
     // "OpenCL": "opencl" finds it by substring, "ocl" only through this table.
+    // ggml-hip (AMD) is ggml-cuda's sources under the name "ROCm": "rocm"
+    // finds it by substring, "hip" only through this table, and "cuda" does
+    // NOT - a HIP build asked for cuda fails with the device list.
     static const char * const families[][3] = {
         { "metal",  "mtl",    nullptr },
         { "cuda",   nullptr,  nullptr },
+        { "rocm",   "hip",    nullptr },
         { "vulkan", "vk",     nullptr },
         { "opencl", "ocl",    nullptr },
     };
