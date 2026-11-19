@@ -102,8 +102,19 @@ fi
 # ---------------------------------------------------------------- 2 fixtures
 # Small random models with the real graph: seconds to build, and they decide
 # whether a failure is the backend or the checkpoint.
-python3 -m pip install -q numpy gguf > "$OUT/2-pip.txt" 2>&1 \
-    || python3 -m pip install -q --break-system-packages numpy gguf >> "$OUT/2-pip.txt" 2>&1
+# The ROCm cloud image ships python3 WITHOUT pip, and every fixture gate below
+# needs numpy + gguf. Install pip from apt if it is missing, and stop here if
+# the imports still fail - otherwise sections 2-4 all go red for one cause.
+{
+    python3 -m pip --version || { apt-get update -qq && apt-get install -y -qq python3-pip; }
+    python3 -m pip install -q numpy gguf \
+        || python3 -m pip install -q --break-system-packages numpy gguf
+} > "$OUT/2-pip.txt" 2>&1
+if ! python3 -c "import numpy, gguf" 2>> "$OUT/2-pip.txt"; then
+    note "numpy/gguf not importable - the fixture gates (sections 2-4) cannot run. See 2-pip.txt"
+    SKIP_FIXTURES=1
+fi
+if [ -z "${SKIP_FIXTURES:-}" ]; then
 FX=$ROOT/models/small
 SHAPE="--d-model 256 --enc-layers 4 --dec-layers 4 --heads 4 --ffn 1024 --vocab 4000 --n-ctx 64"
 run 2-fixture-f32 python3 tests/make_shape_model.py "$FX-f32.gguf" $SHAPE --outtype f32
@@ -138,6 +149,9 @@ if [ -z "${SKIP_CORRUPT:-}" ]; then
 else
     skip 4-corrupt-backend "SKIP_CORRUPT set"
 fi
+else
+    skip 2-4-fixture-gates "numpy/gguf missing"
+fi   # SKIP_FIXTURES
 
 # ---------------------------------------------------------------- 5 the real model
 if [ -n "${SKIP_REAL:-}" ]; then
